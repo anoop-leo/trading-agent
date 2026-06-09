@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-agent"
+version = "0.1.0"
+description = "Phase 1 local technical signal engine for paper-trading decisions."
+requires-python = ">=3.11"
+dependencies = [
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+  "pandas>=2.1",
+]
+
+[project.scripts]
+trading-agent = "trading_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
