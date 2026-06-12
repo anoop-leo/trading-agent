@@ -4,13 +4,25 @@ import unittest
 
 import pandas as pd
 
-from trading_agent.data import BinanceKlineProvider, DataLoadError, normalize_klines
+from trading_agent.data import BinanceKlineProvider, BybitKlineProvider, DataLoadError, normalize_klines
 
 
 RAW_KLINES = [
     [1710003600000, "101.0", "105.0", "99.0", "104.0", "12.5", 0, 0, 0, 0, 0, 0],
     [1710000000000, "100.0", "102.0", "98.0", "101.0", "10.0", 0, 0, 0, 0, 0, 0],
 ]
+BYBIT_PAYLOAD = {
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+        "category": "spot",
+        "symbol": "HYPEUSDT",
+        "list": [
+            ["1710003600000", "101.0", "105.0", "99.0", "104.0", "12.5", "1300.0"],
+            ["1710000000000", "100.0", "102.0", "98.0", "101.0", "10.0", "1010.0"],
+        ],
+    },
+}
 
 
 class FakeResponse:
@@ -68,6 +80,34 @@ class DataTests(unittest.TestCase):
 
         with self.assertRaises(DataLoadError):
             provider.fetch_ohlcv("BTCUSDT", "1h", 500)
+
+    def test_bybit_provider_calls_public_kline_endpoint(self) -> None:
+        calls = []
+
+        def opener(request, timeout):
+            calls.append((request, timeout))
+            return FakeResponse(BYBIT_PAYLOAD)
+
+        provider = BybitKlineProvider(base_url="https://example.test", timeout_seconds=3.0, opener=opener)
+        frame = provider.fetch_ohlcv("hypeusdt", "1h", 500)
+
+        request, timeout = calls[0]
+        parsed = urlparse(request.full_url)
+        query = parse_qs(parsed.query)
+        self.assertEqual(parsed.path, "/v5/market/kline")
+        self.assertEqual(query["category"], ["spot"])
+        self.assertEqual(query["symbol"], ["HYPEUSDT"])
+        self.assertEqual(query["interval"], ["60"])
+        self.assertEqual(query["limit"], ["500"])
+        self.assertEqual(timeout, 3.0)
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(frame.iloc[-1]["close"], 104.0)
+
+    def test_bybit_provider_rejects_error_payload(self) -> None:
+        provider = BybitKlineProvider(opener=lambda *_args, **_kwargs: FakeResponse({"retCode": 10001, "retMsg": "bad"}))
+
+        with self.assertRaises(DataLoadError):
+            provider.fetch_ohlcv("HYPEUSDT", "1h", 500)
 
 
 if __name__ == "__main__":

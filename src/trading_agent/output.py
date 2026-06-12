@@ -8,8 +8,9 @@ from typing import Any
 
 import pandas as pd
 
-from decision.decision_engine import DecisionResult
+from decision.decision_engine import DecisionResult, FinalDecisionResult
 from scoring.market_regime_skill import MarketRegimeResult
+from scoring.multi_timeframe_skill import MultiTimeframeResult, TimeframeSignal
 from scoring.risk_reward_skill import RiskRewardResult
 from scoring.setup_detection_skill import SetupResult
 from scoring.support_resistance_skill import SupportResistanceResult, calculate_support_resistance
@@ -23,6 +24,7 @@ class OutputError(RuntimeError):
 
 
 REQUIRED_SIGNAL_COLUMNS = (
+    "timestamp",
     "close",
     "ema_20",
     "ema_50",
@@ -80,6 +82,40 @@ def _entry_zone_to_json(decision: DecisionResult) -> dict[str, int | float] | No
     }
 
 
+def _timeframe_signal_to_json(signal: TimeframeSignal) -> dict[str, Any]:
+    return {
+        "setup": signal.setup,
+        "decision": signal.decision,
+        "trend_score": signal.trend_score,
+        "momentum_score": signal.momentum_score,
+        "volume_score": signal.volume_score,
+        "bottom_score": signal.bottom_score,
+        "sr_score": signal.sr_score,
+        "rr_score": signal.rr_score,
+        "regime_score": signal.regime_score,
+        "setup_confidence": signal.setup_confidence,
+        "price": _format_number(signal.price),
+        "rsi": _format_number(signal.rsi),
+        "macd": signal.macd,
+        "ema20": _format_number(signal.ema20),
+        "ema50": _format_number(signal.ema50),
+        "ema200": _format_number(signal.ema200),
+        "market_regime": signal.market_regime,
+    }
+
+
+def _multi_timeframe_to_json(multi_timeframe: MultiTimeframeResult) -> dict[str, Any]:
+    return {
+        "alignment": multi_timeframe.alignment.value,
+        "alignment_score": multi_timeframe.alignment_score,
+        "summary": multi_timeframe.summary,
+        "timeframes": {
+            timeframe: _timeframe_signal_to_json(signal)
+            for timeframe, signal in multi_timeframe.timeframes.items()
+        },
+    }
+
+
 def build_output_payload(
     config: AgentConfig,
     indicator_frame: pd.DataFrame,
@@ -89,12 +125,16 @@ def build_output_payload(
     risk_reward: RiskRewardResult,
     market_regime: MarketRegimeResult,
     setup: SetupResult,
+    multi_timeframe: MultiTimeframeResult | None = None,
+    final_decision: FinalDecisionResult | None = None,
 ) -> dict[str, Any]:
     """Build the JSON-compatible Phase 1 signal payload."""
 
     row = _latest_signal_row(indicator_frame)
-    return {
+    payload = {
+        "timestamp": pd.Timestamp(row["timestamp"]).isoformat(),
         "symbol": config.symbol,
+        "market_data_source": config.resolved_market_data_source,
         "position_mode": config.position_mode,
         "price": _format_number(row["close"]),
         "ema20": _format_number(row["ema_20"]),
@@ -133,6 +173,12 @@ def build_output_payload(
         "target_2": _format_optional_number(decision.target_2),
         "rationale": decision.rationale,
     }
+    if multi_timeframe is not None:
+        payload["multi_timeframe"] = _multi_timeframe_to_json(multi_timeframe)
+    if final_decision is not None:
+        payload["final_decision"] = final_decision.decision.value
+        payload["final_decision_reason"] = final_decision.reason
+    return payload
 
 
 def write_json(payload: dict[str, Any], output_dir: Path, filename: str = "output.json") -> Path:
@@ -235,7 +281,8 @@ def write_chart(
     price_ax.axhline(current_price, label="Entry", color="#111827", linestyle=":", linewidth=1.0)
     title = symbol or "Phase 1 Technical Signal"
     if setup_label is not None:
-        title = f"{title}\nSetup: {setup_label}"
+        prefix = "" if "\n" in setup_label or ":" in setup_label else "Setup: "
+        title = f"{title}\n{prefix}{setup_label}"
     price_ax.set_title(title)
     price_ax.set_ylabel("Price")
     price_ax.grid(True, alpha=0.2)

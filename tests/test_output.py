@@ -8,8 +8,9 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from decision.decision_engine import Decision, DecisionResult, PriceZone
+from decision.decision_engine import Decision, DecisionResult, FinalDecisionResult, PriceZone
 from scoring.market_regime_skill import MarketRegime, MarketRegimeResult
+from scoring.multi_timeframe_skill import Alignment, MultiTimeframeResult, TimeframeSignal
 from scoring.risk_reward_skill import RiskRewardResult
 from scoring.setup_detection_skill import Setup, SetupResult
 from scoring.support_resistance_skill import SupportResistanceResult
@@ -23,6 +24,7 @@ class OutputTests(unittest.TestCase):
         frame = pd.DataFrame(
             [
                 {
+                    "timestamp": "2024-01-01T00:00:00+00:00",
                     "high": 70000.0,
                     "low": 61800.0,
                     "close": 63500.0,
@@ -73,12 +75,46 @@ class OutputTests(unittest.TestCase):
                 setup_confidence=72,
                 setup_reason=["Bottom score is elevated", "Price near support"],
             ),
+            MultiTimeframeResult(
+                timeframes={
+                    "1h": TimeframeSignal(
+                        timeframe="1h",
+                        trend_score=10,
+                        momentum_score=8,
+                        volume_score=7,
+                        bottom_score=7,
+                        sr_score=4,
+                        rr_score=10,
+                        regime_score=5,
+                        setup="BOTTOMING",
+                        setup_confidence=72,
+                        decision="BUY",
+                        price=63500.0,
+                        rsi=61.4,
+                        macd="bearish",
+                        ema20=62800.0,
+                        ema50=65000.0,
+                        ema200=68000.0,
+                        market_regime="NEUTRAL",
+                    )
+                },
+                alignment=Alignment.MIXED_ALIGNMENT,
+                alignment_score=50,
+                summary="Timeframes conflict. Wait for cleaner alignment.",
+            ),
+            FinalDecisionResult(
+                decision=Decision.WAIT,
+                decision_meaning="No clear new long setup. Wait.",
+                reason="Timeframes conflict, so wait for cleaner confirmation.",
+            ),
         )
 
         self.assertEqual(
             payload,
             {
+                "timestamp": "2024-01-01T00:00:00+00:00",
                 "symbol": "BTCUSDT",
+                "market_data_source": "BINANCE",
                 "position_mode": "NO_POSITION",
                 "price": 63500,
                 "ema20": 62800,
@@ -125,6 +161,34 @@ class OutputTests(unittest.TestCase):
                     "Trade quality scores are SR 4/10, RR 10/10 at 3.82R, and market regime NEUTRAL",
                     "Decision is BUY with 73% confidence from deterministic Phase 1 rules",
                 ],
+                "multi_timeframe": {
+                    "alignment": "MIXED_ALIGNMENT",
+                    "alignment_score": 50,
+                    "summary": "Timeframes conflict. Wait for cleaner alignment.",
+                    "timeframes": {
+                        "1h": {
+                            "setup": "BOTTOMING",
+                            "decision": "BUY",
+                            "trend_score": 10,
+                            "momentum_score": 8,
+                            "volume_score": 7,
+                            "bottom_score": 7,
+                            "sr_score": 4,
+                            "rr_score": 10,
+                            "regime_score": 5,
+                            "setup_confidence": 72,
+                            "price": 63500,
+                            "rsi": 61.4,
+                            "macd": "bearish",
+                            "ema20": 62800,
+                            "ema50": 65000,
+                            "ema200": 68000,
+                            "market_regime": "NEUTRAL",
+                        },
+                    },
+                },
+                "final_decision": "WAIT",
+                "final_decision_reason": "Timeframes conflict, so wait for cleaner confirmation.",
             },
         )
 

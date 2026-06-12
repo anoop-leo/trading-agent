@@ -107,6 +107,7 @@ def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
 
     enriched["ema_20"] = calculate_ema(close, 20)
     enriched["ema_50"] = calculate_ema(close, 50)
+    enriched["ema_100"] = calculate_ema(close, 100)
     enriched["ema_200"] = calculate_ema(close, 200)
     enriched["rsi_14"] = calculate_rsi(close, 14)
     enriched = enriched.join(calculate_macd(close))

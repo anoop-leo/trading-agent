@@ -64,6 +64,13 @@ class DecisionResult:
     rationale: list[str]
 
 
+@dataclass(frozen=True)
+class FinalDecisionResult:
+    decision: Decision
+    decision_meaning: str
+    reason: str
+
+
 class DecisionError(ValueError):
     """Raised when a deterministic decision cannot be made."""
 
@@ -361,6 +368,68 @@ def decision_meaning(decision: Decision, position_mode: str) -> str:
     if position_mode == "HOLDING":
         return holding_meanings.get(decision, "Decision applies to an existing holding.")
     return no_position_meanings.get(decision, "Decision applies to no-position mode.")
+
+
+def apply_multi_timeframe_alignment(
+    primary_decision: Decision,
+    alignment: str,
+    position_mode: str = "NO_POSITION",
+) -> FinalDecisionResult:
+    """Apply Phase 1.3 multi-timeframe alignment as the final decision layer."""
+
+    if alignment not in {
+        "BULLISH_ALIGNMENT",
+        "BEARISH_ALIGNMENT",
+        "REVERSAL_FORMING",
+        "PULLBACK_IN_UPTREND",
+        "PULLBACK_IN_DOWNTREND",
+        "MIXED_ALIGNMENT",
+        "RANGE_ALIGNMENT",
+    }:
+        raise DecisionError("alignment must be a supported Phase 1.3 alignment.")
+    if position_mode not in {"NO_POSITION", "HOLDING"}:
+        raise DecisionError("position_mode must be NO_POSITION or HOLDING.")
+
+    if alignment == "BEARISH_ALIGNMENT":
+        if position_mode == "HOLDING":
+            decision = Decision.EXIT if primary_decision == Decision.EXIT else Decision.REDUCE
+            reason = "Major timeframes are bearish, so existing exposure should be managed defensively."
+        else:
+            decision = Decision.AVOID_LONG
+            reason = "Major timeframes are bearish, so new long entries are blocked."
+        return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
+
+    if alignment == "REVERSAL_FORMING":
+        decision = Decision.WATCH_FOR_REVERSAL
+        reason = "Short-term bottoming detected, but higher timeframes remain bearish."
+        return FinalDecisionResult(decision, decision_meaning(decision, "NO_POSITION"), reason)
+
+    if alignment == "BULLISH_ALIGNMENT":
+        if position_mode == "HOLDING":
+            decision = primary_decision if primary_decision in {Decision.ADD, Decision.HOLD} else Decision.HOLD
+        else:
+            decision = primary_decision if primary_decision in {Decision.BUY, Decision.BUY_WATCH} else Decision.BUY_WATCH
+        reason = "Multi-timeframe alignment supports long-side setups."
+        return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
+
+    if alignment == "PULLBACK_IN_UPTREND":
+        decision = Decision.HOLD if position_mode == "HOLDING" else Decision.BUY_WATCH
+        reason = "Higher timeframe uptrend remains intact while the short-term timeframe pulls back."
+        return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
+
+    if alignment == "PULLBACK_IN_DOWNTREND":
+        decision = Decision.REDUCE if position_mode == "HOLDING" else Decision.AVOID_LONG
+        reason = "Short-term bounce is occurring inside a higher-timeframe downtrend."
+        return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
+
+    if alignment == "RANGE_ALIGNMENT":
+        decision = Decision.HOLD if position_mode == "HOLDING" else Decision.WAIT
+        reason = "Most major timeframes are range-bound, so trend entries should wait."
+        return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
+
+    decision = Decision.HOLD if position_mode == "HOLDING" else Decision.WAIT
+    reason = "Timeframes conflict, so wait for cleaner confirmation."
+    return FinalDecisionResult(decision, decision_meaning(decision, position_mode), reason)
 
 
 def build_rationale(decision: Decision, decision_input: DecisionInput, confidence: int) -> list[str]:
