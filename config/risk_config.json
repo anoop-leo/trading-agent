@@ -1,0 +1,20 @@
+{
+  "bucket_targets": {
+    "cash_pct": 13.0,
+    "core_pct": 45.0,
+    "growth_pct": 30.0,
+    "speculative_pct": 12.0
+  },
+  "cash_buffer_min_pct": 10.0,
+  "core_default_position_usd": 5000.0,
+  "equity_gap_buffer_pct": 5.0,
+  "growth_default_position_usd": 5000.0,
+  "growth_position_max_pct": 5.0,
+  "portfolio_drawdown_circuit_breaker_pct": 25.0,
+  "portfolio_drawdown_recovery_pct": 15.0,
+  "risk_per_trade_pct": 1.0,
+  "speculative_default_position_usd": 1500.0,
+  "speculative_max_pct": 12.0,
+  "speculative_position_max_pct": 2.0,
+  "total_portfolio_value_usd": 330000.0
+}
