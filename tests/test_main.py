@@ -8,6 +8,7 @@ import pandas as pd
 from trading_agent.config import AgentConfig
 from trading_agent.data import BybitKlineProvider
 from trading_agent.main import (
+    _run_investor_command,
     build_audit_fees_parser,
     build_backtest_parser,
     build_coinbase_execution_audit_parser,
@@ -239,6 +240,67 @@ class MainTests(unittest.TestCase):
         self.assertEqual(args.current_price, 0.25)
         self.assertEqual(args.quote_volume_usd, 125000000)
         self.assertEqual(args.average_quote_volume_usd, 80000000)
+
+    def test_investor_parser_accepts_risk_engine_flags(self) -> None:
+        args = build_investor_parser().parse_args(
+            [
+                "--symbol", "SPY",
+                "--asset-class", "EQUITY",
+                "--bucket", "core",
+                "--default-position-usd", "3000",
+                "--risk-config-path", "config/test_risk_config.json",
+                "--portfolio-state-path", "data/test_portfolio_state.json",
+                "--skip-risk-engine",
+            ]
+        )
+
+        self.assertEqual(args.asset_class, "EQUITY")
+        self.assertEqual(args.bucket, "core")
+        self.assertEqual(args.default_position_usd, 3000.0)
+        self.assertEqual(args.risk_config_path, Path("config/test_risk_config.json"))
+        self.assertEqual(args.portfolio_state_path, Path("data/test_portfolio_state.json"))
+        self.assertTrue(args.skip_risk_engine)
+
+    def test_investor_command_auto_detects_core_etf_symbol(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            payload = _run_investor_command(
+                ["--symbol", "SPY", "--output-dir", temp_dir, "--skip-risk-engine"]
+            )
+
+        self.assertEqual(payload["agent"], "EQUITY_INVESTOR")
+        self.assertEqual(payload["bucket"], "core")
+        self.assertNotIn("risk_decision", payload)
+
+    def test_investor_command_attaches_risk_decision_for_equity(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            payload = _run_investor_command(
+                [
+                    "--symbol", "SPY",
+                    "--output-dir", temp_dir,
+                    "--risk-config-path", f"{temp_dir}/risk_config.json",
+                    "--portfolio-state-path", f"{temp_dir}/portfolio_state.json",
+                ]
+            )
+
+        self.assertIn("risk_decision", payload)
+        self.assertEqual(payload["risk_decision"]["status"], "approved")
+        self.assertEqual(payload["risk_decision"]["recommendation"]["asset_class"], "equity")
+
+    def test_investor_command_attaches_risk_decision_for_btc_offline(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            payload = _run_investor_command(
+                [
+                    "--symbol", "BTC",
+                    "--offline",
+                    "--output-dir", temp_dir,
+                    "--risk-config-path", f"{temp_dir}/risk_config.json",
+                    "--portfolio-state-path", f"{temp_dir}/portfolio_state.json",
+                ]
+            )
+
+        self.assertIn("risk_decision", payload)
+        self.assertEqual(payload["risk_decision"]["recommendation"]["bucket"], "core")
+        self.assertEqual(payload["risk_decision"]["recommendation"]["asset_class"], "crypto")
 
 
 if __name__ == "__main__":

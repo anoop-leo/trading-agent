@@ -786,6 +786,41 @@ def build_investor_parser() -> argparse.ArgumentParser:
         help="Manual average quote volume in USD.",
     )
     parser.add_argument("--atr-pct", type=float, default=None, help="Manual ATR percentage.")
+    parser.add_argument(
+        "--asset-class",
+        default="AUTO",
+        choices=["AUTO", "CRYPTO", "EQUITY"],
+        help="Force crypto or equity dispatch. AUTO recognizes known core ETFs (SPY, QQQ, VTI, IWM, DIA) as equity.",
+    )
+    parser.add_argument(
+        "--bucket",
+        default=None,
+        choices=["core", "growth", "speculative"],
+        help="Override the portfolio bucket used for equity risk-engine evaluation.",
+    )
+    parser.add_argument(
+        "--default-position-usd",
+        type=float,
+        default=2_000.0,
+        help="Baseline position size before conviction scaling and risk-engine caps.",
+    )
+    parser.add_argument(
+        "--risk-config-path",
+        type=Path,
+        default=None,
+        help="Path to risk_config.json. Defaults to config/risk_config.json.",
+    )
+    parser.add_argument(
+        "--portfolio-state-path",
+        type=Path,
+        default=None,
+        help="Path to portfolio_state.json. Defaults to data/portfolio_state.json.",
+    )
+    parser.add_argument(
+        "--skip-risk-engine",
+        action="store_true",
+        help="Skip the live risk engine gate and return the raw investor agent payload.",
+    )
     return parser
 
 
@@ -1124,34 +1159,64 @@ def _run_collect_shadow_signals_command(argv: Sequence[str] | None = None) -> di
 def _run_investor_command(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = build_investor_parser().parse_args(argv)
     symbol = args.symbol.upper()
-    if symbol in {"BTC", "BTCUSDT"}:
-        from agents.investor_agent import InvestorAgentConfig, run_investor_agent
 
-        return run_investor_agent(
-            InvestorAgentConfig(
-                symbol="BTC",
-                output_dir=args.output_dir,
-                offline=args.offline,
-                request_timeout_seconds=args.timeout_seconds,
-                binance_base_url=args.binance_base_url,
-                portfolio_risk_profile=args.portfolio_risk_profile,
-                current_btc_allocation_pct=args.current_btc_allocation_pct,
-                target_btc_allocation_pct=args.target_btc_allocation_pct,
-                max_btc_allocation_pct=args.max_btc_allocation_pct,
-                current_btc=args.current_btc,
-                target_btc=args.target_btc,
-                target_sell_price=args.target_sell_price,
-                planned_sell_btc=args.planned_sell_btc,
-                retain_btc=args.retain_btc,
-                monthly_dca_usd=args.monthly_dca_usd,
-                lump_sum_available_usd=args.lump_sum_available_usd,
-                reference_price_for_dip=args.reference_price_for_dip,
-            )
+    from agents.equity_investor_agent import is_core_etf_symbol
+
+    is_equity = args.asset_class == "EQUITY" or (args.asset_class == "AUTO" and is_core_etf_symbol(symbol))
+
+    if is_equity:
+        payload = _run_equity_investor(args, symbol)
+        recommendation_dict = payload["position_recommendation"]
+        from decision.recommendation import PositionRecommendation
+
+        recommendation = PositionRecommendation.from_dict(recommendation_dict)
+    elif symbol in {"BTC", "BTCUSDT"}:
+        payload = _run_btc_investor(args)
+        from decision.investor_recommendation import build_crypto_position_recommendation
+
+        recommendation = build_crypto_position_recommendation(payload, args.default_position_usd)
+    else:
+        payload = _run_crypto_investor(args)
+        from decision.investor_recommendation import build_crypto_position_recommendation
+
+        recommendation = build_crypto_position_recommendation(payload, args.default_position_usd)
+
+    if args.skip_risk_engine:
+        return payload
+
+    return _attach_risk_decision(payload, recommendation, args)
+
+
+def _run_btc_investor(args: argparse.Namespace) -> dict[str, Any]:
+    from agents.investor_agent import InvestorAgentConfig, run_investor_agent
+
+    return run_investor_agent(
+        InvestorAgentConfig(
+            symbol="BTC",
+            output_dir=args.output_dir,
+            offline=args.offline,
+            request_timeout_seconds=args.timeout_seconds,
+            binance_base_url=args.binance_base_url,
+            portfolio_risk_profile=args.portfolio_risk_profile,
+            current_btc_allocation_pct=args.current_btc_allocation_pct,
+            target_btc_allocation_pct=args.target_btc_allocation_pct,
+            max_btc_allocation_pct=args.max_btc_allocation_pct,
+            current_btc=args.current_btc,
+            target_btc=args.target_btc,
+            target_sell_price=args.target_sell_price,
+            planned_sell_btc=args.planned_sell_btc,
+            retain_btc=args.retain_btc,
+            monthly_dca_usd=args.monthly_dca_usd,
+            lump_sum_available_usd=args.lump_sum_available_usd,
+            reference_price_for_dip=args.reference_price_for_dip,
         )
+    )
 
+
+def _run_crypto_investor(args: argparse.Namespace) -> dict[str, Any]:
     from agents.crypto_investor_agent import CryptoInvestorConfig, run_crypto_investor_agent
 
-    payload = run_crypto_investor_agent(
+    return run_crypto_investor_agent(
         CryptoInvestorConfig(
             symbol=args.symbol,
             output_dir=args.output_dir,
@@ -1174,6 +1239,49 @@ def _run_investor_command(argv: Sequence[str] | None = None) -> dict[str, Any]:
             atr_pct=args.atr_pct,
         )
     )
+
+
+def _run_equity_investor(args: argparse.Namespace, symbol: str) -> dict[str, Any]:
+    from agents.equity_investor_agent import EquityInvestorConfig, run_equity_investor_agent
+
+    return run_equity_investor_agent(
+        EquityInvestorConfig(
+            symbol=symbol,
+            bucket=args.bucket,
+            output_dir=args.output_dir,
+            offline=args.offline,
+            request_timeout_seconds=args.timeout_seconds,
+            default_position_usd=args.default_position_usd,
+            current_price=args.current_price,
+            ma200=args.ma200,
+            weekly_rsi=args.weekly_rsi,
+            monthly_ema20=args.monthly_ema20,
+            monthly_trend=args.monthly_trend,
+        )
+    )
+
+
+def _attach_risk_decision(
+    payload: dict[str, Any],
+    recommendation: Any,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    from risk.live_risk_engine import LiveRiskEngine
+    from risk.portfolio_state import DEFAULT_PORTFOLIO_STATE_PATH, load_portfolio_state
+    from risk.risk_config import DEFAULT_RISK_CONFIG_PATH, load_risk_config
+    from risk.risk_decision_log import append_risk_decision
+
+    risk_config_path = args.risk_config_path or DEFAULT_RISK_CONFIG_PATH
+    portfolio_state_path = args.portfolio_state_path or DEFAULT_PORTFOLIO_STATE_PATH
+    config = load_risk_config(risk_config_path)
+    state = load_portfolio_state(portfolio_state_path, config)
+
+    engine = LiveRiskEngine(config)
+    decision = engine.evaluate(recommendation, state)
+    append_risk_decision(decision)
+
+    payload["position_recommendation"] = recommendation.to_dict()
+    payload["risk_decision"] = decision.to_dict()
     return payload
 
 
