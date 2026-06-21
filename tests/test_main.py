@@ -7,7 +7,19 @@ import pandas as pd
 
 from trading_agent.config import AgentConfig
 from trading_agent.data import BybitKlineProvider
-from trading_agent.main import build_market_data_provider, run
+from trading_agent.main import (
+    build_audit_fees_parser,
+    build_backtest_parser,
+    build_coinbase_execution_audit_parser,
+    build_collect_shadow_signals_parser,
+    build_false_avoid_analysis_parser,
+    build_investor_parser,
+    build_market_data_provider,
+    build_merge_coinbase_execution_audit_parser,
+    build_shadow_coinbase_parser,
+    build_validate_equities_parser,
+    run,
+)
 
 
 class FakeProvider:
@@ -68,6 +80,165 @@ class MainTests(unittest.TestCase):
             self.assertTrue((Path(temp_dir) / "signal_journal.json").exists())
             self.assertEqual(chart_calls, [Path(temp_dir)])
             self.assertEqual(provider.intervals, ["1h", "4h", "1d"])
+
+    def test_backtest_parser_accepts_cross_asset_validation_options(self) -> None:
+        args = build_backtest_parser().parse_args(
+            [
+                "--strategy",
+                "cross_asset_validation",
+                "--assets",
+                "BTCUSDT",
+                "SPY",
+                "--include-optional-assets",
+            ]
+        )
+
+        self.assertEqual(args.strategy, "cross_asset_validation")
+        self.assertEqual(args.assets, ["BTCUSDT", "SPY"])
+        self.assertTrue(args.include_optional_assets)
+
+    def test_backtest_parser_accepts_exit_optimization_strategy(self) -> None:
+        args = build_backtest_parser().parse_args(["--strategy", "exit_optimization"])
+
+        self.assertEqual(args.strategy, "exit_optimization")
+
+    def test_backtest_parser_accepts_broker_cost_validation_strategy(self) -> None:
+        args = build_backtest_parser().parse_args(["--strategy", "broker_cost_validation"])
+
+        self.assertEqual(args.strategy, "broker_cost_validation")
+
+    def test_audit_fees_parser_accepts_aggressive_strategy(self) -> None:
+        args = build_audit_fees_parser().parse_args(["--symbol", "BTCUSDT", "--strategy", "aggressive"])
+
+        self.assertEqual(args.symbol, "BTCUSDT")
+        self.assertEqual(args.strategy, "aggressive")
+
+    def test_validate_equities_parser_defaults_to_spy_and_qqq(self) -> None:
+        args = build_validate_equities_parser().parse_args([])
+
+        self.assertEqual(args.assets, ["SPY", "QQQ"])
+        self.assertEqual(args.start, "2018-01-01")
+        self.assertEqual(args.timeframes, ["1h", "4h", "1d"])
+
+    def test_coinbase_execution_audit_parser_accepts_smoke_run_options(self) -> None:
+        args = build_coinbase_execution_audit_parser().parse_args(
+            [
+                "--product",
+                "BTC/USD",
+                "--duration-hours",
+                "0.1",
+                "--interval-seconds",
+                "60",
+                "--intended-order-size",
+                "2500",
+            ]
+        )
+
+        self.assertEqual(args.product_id, "BTC/USD")
+        self.assertEqual(args.duration_hours, 0.1)
+        self.assertEqual(args.interval_seconds, 60.0)
+        self.assertEqual(args.intended_order_size, 2500.0)
+
+    def test_merge_coinbase_execution_audit_parser_accepts_input_csvs(self) -> None:
+        args = build_merge_coinbase_execution_audit_parser().parse_args(
+            [
+                "--input-csv",
+                "previous.csv",
+                "continuation.csv",
+                "--failed-samples",
+                "0",
+            ]
+        )
+
+        self.assertEqual(args.input_csv, [Path("previous.csv"), Path("continuation.csv")])
+        self.assertEqual(args.failed_samples, 0)
+
+    def test_shadow_coinbase_parser_defaults_to_30_day_btc_shadow_run(self) -> None:
+        args = build_shadow_coinbase_parser().parse_args([])
+
+        self.assertEqual(args.product_id, "BTC-USD")
+        self.assertEqual(args.duration_days, 30.0)
+        self.assertEqual(args.cycle_interval_seconds, 3600.0)
+        self.assertEqual(args.initial_shadow_capital, 10000.0)
+        self.assertEqual(args.intended_order_size, 2500.0)
+        self.assertIsNone(args.target_signal_count)
+        self.assertFalse(args.no_resume_signal_collection)
+
+    def test_shadow_coinbase_parser_accepts_enriched_collection_target(self) -> None:
+        args = build_shadow_coinbase_parser().parse_args(
+            ["--target-signal-count", "50", "--no-resume-signal-collection"]
+        )
+
+        self.assertEqual(args.target_signal_count, 50)
+        self.assertTrue(args.no_resume_signal_collection)
+
+    def test_collect_shadow_signals_parser_accepts_quick_test_options(self) -> None:
+        args = build_collect_shadow_signals_parser().parse_args(
+            ["--product", "BTC-USD", "--target-signals", "3", "--interval-seconds", "60", "--reset"]
+        )
+
+        self.assertEqual(args.product_id, "BTC-USD")
+        self.assertEqual(args.target_signals, 3)
+        self.assertEqual(args.interval_seconds, 60.0)
+        self.assertTrue(args.reset)
+
+    def test_false_avoid_analysis_parser_accepts_output_dir(self) -> None:
+        args = build_false_avoid_analysis_parser().parse_args(["--output-dir", "research_outputs"])
+
+        self.assertEqual(args.output_dir, Path("research_outputs"))
+
+    def test_investor_parser_accepts_offline_mode(self) -> None:
+        args = build_investor_parser().parse_args(["--symbol", "BTC", "--offline"])
+
+        self.assertEqual(args.symbol, "BTC")
+        self.assertTrue(args.offline)
+
+    def test_investor_parser_accepts_chainlink_alias_and_thesis_risk(self) -> None:
+        args = build_investor_parser().parse_args(
+            ["--symbol", "CHAINLNK", "--thesis-risk-level", "LOW", "--thesis-risk-flags", "oracle_competition"]
+        )
+
+        self.assertEqual(args.symbol, "CHAINLNK")
+        self.assertEqual(args.thesis_risk_level, "LOW")
+        self.assertEqual(args.thesis_risk_flags, ["oracle_competition"])
+
+    def test_investor_parser_accepts_manual_crypto_snapshot(self) -> None:
+        args = build_investor_parser().parse_args(
+            [
+                "--symbol",
+                "SEI",
+                "--asset-name",
+                "Sei",
+                "--sector",
+                "Parallelized L1",
+                "--market-data-source",
+                "BINANCE",
+                "--price",
+                "0.25",
+                "--ma200",
+                "0.40",
+                "--weekly-rsi",
+                "36",
+                "--monthly-ema20",
+                "0.31",
+                "--recent-cycle-high",
+                "1.25",
+                "--quote-volume-usd",
+                "125000000",
+                "--average-quote-volume-usd",
+                "80000000",
+                "--atr-pct",
+                "4.5",
+            ]
+        )
+
+        self.assertEqual(args.symbol, "SEI")
+        self.assertEqual(args.asset_name, "Sei")
+        self.assertEqual(args.sector, "Parallelized L1")
+        self.assertEqual(args.market_data_source, "BINANCE")
+        self.assertEqual(args.current_price, 0.25)
+        self.assertEqual(args.quote_volume_usd, 125000000)
+        self.assertEqual(args.average_quote_volume_usd, 80000000)
 
 
 if __name__ == "__main__":
