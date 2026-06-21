@@ -1541,7 +1541,182 @@ outputs/chart.png
 
 # Project Structure
 
+Phase 1.15 Portfolio Risk Governor
+
+- Module: `src/risk/portfolio_risk_governor.py`
+- Simulator: `src/backtesting/portfolio_governor_simulator.py`
+- CLI: `python src/main.py backtest --strategy regime_gated_portfolio_governor`
+- Report: `outputs/portfolio_risk_governor_report.json`
+
+Risk states:
+
+- `NORMAL`: drawdown < 10%, allocation 100%, runners enabled
+- `CAUTION`: drawdown >= 10%, allocation 75%, runners enabled
+- `DEFENSIVE`: drawdown >= 15%, allocation 50%, runners disabled
+- `CAPITAL_PRESERVATION`: drawdown >= 20%, allocation 25%, runners disabled, no new Trend Holding runners
+
+Sizing:
+
+- Risk per trade is 1% of current equity
+- Position size = risk amount / (entry price - stop price)
+- If ATR > ATR_MA, size is multiplied by ATR_MA / ATR and clamped between 0.25 and 1.0
+
+Portfolio stop:
+
+- Triggers when drawdown > 25%
+- Closes active runners
+- Disables new runners
+- Recovers only after drawdown falls below 15%
+
+Report metrics:
+
+- total_return_pct
+- CAGR
+- Sharpe
+- Profit Factor
+- Max Drawdown
+- Win Rate
+- Profit Capture Ratio
+- risk_state_counts
+- average_position_size
+- average_runner_size
+- portfolio_stop_count
+- defensive_mode_hours
+
+---
+
+Phase 1.16 Cross-Asset Validation
+
+- Module: `src/backtesting/cross_asset_validation.py`
+- CLI: `python src/main.py backtest --strategy cross_asset_validation`
+- Default assets: BTCUSDT, ETHUSDT, SOLUSDT, SPY, QQQ
+- Optional assets: TQQQ, NVDA
+- Report: `outputs/cross_asset_validation.json`
+
+Rules:
+
+- Use Agent Aggressive
+- Do not tune per asset
+- Do not change indicators, entry logic, exit logic, or position sizing
+- Use identical multi-timeframe logic when all required OHLCV timeframes are available
+- Equity support is market-data-only validation, not broker integration
+
+Robustness Score:
+
+- Positive return: 20 points
+- Sharpe > 0.8: 20 points
+- Max drawdown < 25%: 20 points
+- Profit factor > 1: 20 points
+- Win rate > 40%: 20 points
+
+Report metrics:
+
+- total_return_pct
+- CAGR
+- Sharpe Ratio
+- Max Drawdown
+- Profit Factor
+- Win Rate
+- Total Trades
+- Profit Capture Ratio
+- Asset class averages
+- Failure analysis
+- Recommended production assets
+
+---
+
+Phase 1.16B Equity Data Adapter Fix & Validation
+
+- Adapter: `src/data/equity_data_adapter.py`
+- CLI: `python src/main.py validate-equities`
+- Reports: `outputs/equity_validation_report.json` and `outputs/data_provider_diagnostics.json`
+
+Provider fallback chain:
+
+- Yahoo Finance
+- Stooq
+- Alpha Vantage, optional with `ALPHA_VANTAGE_API_KEY`
+- Twelve Data, optional with `TWELVE_DATA_API_KEY`
+
+Validation rules:
+
+- OHLCV exists
+- No duplicate timestamps
+- No missing timestamps
+- Sorted ascending
+- Minimum 3 years history
+- 1h, 4h, and 1d timeframes available
+- 4h is generated from 1h aggregation when a provider lacks native 4h
+
+Strategy rules:
+
+- Agent Aggressive only
+- No strategy optimization
+- No asset-specific tuning
+- No indicator or exit changes
+
+Success criteria:
+
+- SPY data loads
+- QQQ data loads
+- SPY and QQQ backtests complete
+- At least one equity has Sharpe > 0.8
+- Both required equities have positive return
+
+---
+
+Phase 1.17 Exit Optimization Engine
+
+- Module: `src/research/exit_optimization_engine.py`
+- CLI: `python src/main.py backtest --strategy exit_optimization`
+- Reports: `outputs/exit_optimization_report.json` and `outputs/exit_model_rankings.json`
+
+Research scope:
+
+- Use BTCUSDT from 2020-present
+- Use Agent Aggressive baseline entries
+- Keep entry logic unchanged
+- Keep fixed stop loss logic unchanged
+- Keep position sizing, risk filters, market regime, support/resistance, and signal generation unchanged
+- Replay exit-only models against the same accepted entry schedule
+
+Exit models:
+
+- Baseline production exit
+- EMA20 trend rider
+- EMA20 / EMA50 cross exit
+- ATR trailing exits at 2.0x, 2.5x, 3.0x, and 4.0x
+- Chandelier exit using highest high(22) minus 3 ATR
+- Partial profit plus EMA20 trend ride
+- Multi-target exits
+- Trend-strength exit using ADX and EMA alignment
+- Volatility-adaptive ATR trailing exit
+- Hybrid partial-profit, EMA20, and ATR trailing exits
+
+Ranking:
+
+- Profit capture ratio
+- Sharpe ratio
+- Total return
+- Max drawdown
+- Profit factor
+
+Success criteria:
+
+- Profit capture ratio > 30%
+- Sharpe >= 0.80
+- Profit factor > 1.40
+- Max drawdown < 10%
+
+---
+
 src/
+
+├── data/
+
+│   ├── __init__.py
+
+│   └── equity_data_adapter.py
 
 ├── backtesting/
 
@@ -1565,9 +1740,31 @@ src/
 
 │   ├── hybrid_trend_rider_simulator.py
 
+│   ├── trend_holding_simulator.py
+
+│   ├── regime_gated_trend_holding_simulator.py
+
+│   ├── portfolio_governor_simulator.py
+
+│   ├── cross_asset_validation.py
+
 │   ├── performance_metrics.py
 
 │   └── backtest_report.py
+
+├── risk/
+
+│   ├── __init__.py
+
+│   ├── structure_stop_engine.py
+
+│   └── portfolio_risk_governor.py
+
+├── research/
+
+│   ├── __init__.py
+
+│   └── exit_optimization_engine.py
 
 ├── decision/
 
@@ -1650,6 +1847,14 @@ tests/
 ├── test_decision_engine_v2.py
 
 ├── test_output.py
+
+├── test_portfolio_risk_governor.py
+
+├── test_cross_asset_validation.py
+
+├── test_equity_data_adapter.py
+
+├── test_exit_optimization_engine.py
 
 └── test_main.py
 

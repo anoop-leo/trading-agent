@@ -24,6 +24,7 @@ EXIT_REASONS = (
     "RUNNER_MACD_EXIT",
     "RUNNER_TRAILING_STOP",
     "RUNNER_MAX_DRAWDOWN_EXIT",
+    "PORTFOLIO_STOP",
     "END_OF_BACKTEST",
 )
 REJECTION_REASONS = (
@@ -38,15 +39,28 @@ REJECTION_REASONS = (
     "below_1h_ema20",
     "already_holding",
     "cooldown_active",
+    "invalid_stop_distance",
+    "portfolio_governor_block",
 )
 TRADE_COLUMNS = (
     "entry_timestamp",
     "exit_timestamp",
+    "signal_entry_price",
+    "actual_entry_price",
+    "signal_exit_price",
+    "actual_exit_price",
     "entry_price",
     "exit_price",
     "position_size",
+    "entry_slippage_cost",
+    "exit_slippage_cost",
+    "total_slippage_cost",
+    "gross_pnl_before_fees_and_slippage",
+    "gross_pnl_after_slippage_before_fees",
     "entry_fee",
     "exit_fee",
+    "total_fee",
+    "net_pnl",
     "pnl",
     "return_pct",
     "exit_reason",
@@ -94,11 +108,22 @@ TRADE_COLUMNS = (
 class Trade:
     entry_timestamp: str
     exit_timestamp: str
+    signal_entry_price: float
+    actual_entry_price: float
+    signal_exit_price: float
+    actual_exit_price: float
     entry_price: float
     exit_price: float
     position_size: float
+    entry_slippage_cost: float
+    exit_slippage_cost: float
+    total_slippage_cost: float
+    gross_pnl_before_fees_and_slippage: float
+    gross_pnl_after_slippage_before_fees: float
     entry_fee: float
     exit_fee: float
+    total_fee: float
+    net_pnl: float
     pnl: float
     return_pct: float
     exit_reason: str
@@ -185,6 +210,7 @@ class TradeSimulator:
         self.momentum_exit_minimum_hours = float(momentum_exit_minimum_hours)
         self.cash = float(initial_capital)
         self.position_size = 0.0
+        self.entry_signal_price: float | None = None
         self.entry_price: float | None = None
         self.entry_timestamp: str | None = None
         self.entry_fee = 0.0
@@ -208,6 +234,7 @@ class TradeSimulator:
         self.exits_before_minimum_hold = 0
         self.momentum_exits_blocked = 0
         self.last_rejected_entry_reasons: list[str] = []
+        self._reset_execution_cost_tracking()
 
     @property
     def position_mode(self) -> str:
@@ -323,11 +350,13 @@ class TradeSimulator:
             self.rejected_entry_reasons[reason] += 1
 
     def _open_long(self, timestamp: str, price: float, signal: dict[str, Any]) -> None:
+        self._reset_execution_cost_tracking()
         adjusted_entry_price = price * (1 + self.slippage_rate)
         entry_budget = self.cash * self.strategy_profile.allocation_per_trade
         entry_notional = entry_budget / (1 + self.fee_rate)
         entry_fee = entry_notional * self.fee_rate
         self.position_size = entry_notional / adjusted_entry_price
+        self.entry_signal_price = price
         self.entry_price = adjusted_entry_price
         self.entry_timestamp = timestamp
         self.entry_fee = entry_fee
@@ -344,6 +373,9 @@ class TradeSimulator:
         self.trailing_active = False
         self.entry_audit = {
             "open_reason": "all_entry_gates_passed",
+            "signal_entry_price": price,
+            "actual_entry_price": adjusted_entry_price,
+            "entry_slippage_cost": self.position_size * (adjusted_entry_price - price),
             "entry_decision": str(signal["final_decision"]),
             "entry_alignment": str(signal.get("alignment", "")),
             "entry_rr_ratio": float(signal.get("rr_ratio", 0.0)),
@@ -374,7 +406,8 @@ class TradeSimulator:
         gross_proceeds = self.position_size * adjusted_exit_price
         exit_fee = gross_proceeds * self.fee_rate
         net_proceeds = gross_proceeds - exit_fee
-        pnl = net_proceeds - self.entry_total_cost
+        cost_fields = self._trade_cost_fields(price, adjusted_exit_price, self.position_size, exit_fee)
+        pnl = cost_fields["net_pnl"]
         return_pct = (pnl / self.entry_total_cost) * 100
         r_multiple = self._r_multiple(adjusted_exit_price)
 
@@ -382,11 +415,22 @@ class TradeSimulator:
             Trade(
                 entry_timestamp=self.entry_timestamp,
                 exit_timestamp=timestamp,
-                entry_price=self.entry_price,
-                exit_price=adjusted_exit_price,
-                position_size=self.position_size,
-                entry_fee=self.entry_fee,
-                exit_fee=exit_fee,
+                signal_entry_price=cost_fields["signal_entry_price"],
+                actual_entry_price=cost_fields["actual_entry_price"],
+                signal_exit_price=cost_fields["signal_exit_price"],
+                actual_exit_price=cost_fields["actual_exit_price"],
+                entry_price=cost_fields["actual_entry_price"],
+                exit_price=cost_fields["actual_exit_price"],
+                position_size=cost_fields["position_size"],
+                entry_slippage_cost=cost_fields["entry_slippage_cost"],
+                exit_slippage_cost=cost_fields["exit_slippage_cost"],
+                total_slippage_cost=cost_fields["total_slippage_cost"],
+                gross_pnl_before_fees_and_slippage=cost_fields["gross_pnl_before_fees_and_slippage"],
+                gross_pnl_after_slippage_before_fees=cost_fields["gross_pnl_after_slippage_before_fees"],
+                entry_fee=cost_fields["entry_fee"],
+                exit_fee=cost_fields["exit_fee"],
+                total_fee=cost_fields["total_fee"],
+                net_pnl=cost_fields["net_pnl"],
                 pnl=pnl,
                 return_pct=return_pct,
                 exit_reason=exit_reason,
@@ -424,6 +468,7 @@ class TradeSimulator:
         self.exit_reasons[exit_reason] = self.exit_reasons.get(exit_reason, 0) + 1
         self._activate_cooldown(timestamp)
         self.position_size = 0.0
+        self.entry_signal_price = None
         self.entry_price = None
         self.entry_timestamp = None
         self.entry_fee = 0.0
@@ -435,6 +480,7 @@ class TradeSimulator:
         self.highest_price = 0.0
         self.trailing_stop = None
         self.trailing_active = False
+        self._reset_execution_cost_tracking()
 
     def _exit_reason(
         self,
@@ -570,6 +616,108 @@ class TradeSimulator:
         if self.entry_price is None or self.initial_risk <= 0:
             return 0.0
         return round((exit_price - self.entry_price) / self.initial_risk, 2)
+
+    def _record_partial_exit_cost(
+        self,
+        position_size: float,
+        signal_exit_price: float,
+        actual_exit_price: float,
+        exit_fee: float,
+    ) -> None:
+        self._exit_cost_components.append(
+            self._exit_cost_component(position_size, signal_exit_price, actual_exit_price)
+        )
+        self._partial_exit_fee_total += float(exit_fee)
+
+    def _trade_cost_fields(
+        self,
+        signal_exit_price: float,
+        actual_exit_price: float,
+        final_position_size: float,
+        final_exit_fee: float,
+    ) -> dict[str, float]:
+        components = [
+            *self._exit_cost_components,
+            self._exit_cost_component(final_position_size, signal_exit_price, actual_exit_price),
+        ]
+        closed_position_size = sum(component["position_size"] for component in components)
+        signal_entry_price = self._signal_entry_price()
+        actual_entry_price = self._actual_entry_price()
+        if closed_position_size <= 0:
+            weighted_signal_exit = float(signal_exit_price)
+            weighted_actual_exit = float(actual_exit_price)
+        else:
+            weighted_signal_exit = (
+                sum(component["signal_exit_notional"] for component in components)
+                / closed_position_size
+            )
+            weighted_actual_exit = (
+                sum(component["actual_exit_notional"] for component in components)
+                / closed_position_size
+            )
+        gross_before = sum(component["gross_pnl_before_fees_and_slippage"] for component in components)
+        gross_after = sum(component["gross_pnl_after_slippage_before_fees"] for component in components)
+        entry_slippage_cost = closed_position_size * (actual_entry_price - signal_entry_price)
+        exit_slippage_cost = sum(component["exit_slippage_cost"] for component in components)
+        total_exit_fee = self._partial_exit_fee_total + float(final_exit_fee)
+        total_fee = self.entry_fee + total_exit_fee
+        net_pnl = gross_after - total_fee
+        return {
+            "signal_entry_price": signal_entry_price,
+            "actual_entry_price": actual_entry_price,
+            "signal_exit_price": weighted_signal_exit,
+            "actual_exit_price": weighted_actual_exit,
+            "position_size": closed_position_size,
+            "entry_slippage_cost": entry_slippage_cost,
+            "exit_slippage_cost": exit_slippage_cost,
+            "total_slippage_cost": entry_slippage_cost + exit_slippage_cost,
+            "gross_pnl_before_fees_and_slippage": gross_before,
+            "gross_pnl_after_slippage_before_fees": gross_after,
+            "entry_fee": self.entry_fee,
+            "exit_fee": total_exit_fee,
+            "total_fee": total_fee,
+            "net_pnl": net_pnl,
+        }
+
+    def _exit_cost_component(
+        self,
+        position_size: float,
+        signal_exit_price: float,
+        actual_exit_price: float,
+    ) -> dict[str, float]:
+        signal_entry_price = self._signal_entry_price()
+        actual_entry_price = self._actual_entry_price()
+        size = float(position_size)
+        signal_exit = float(signal_exit_price)
+        actual_exit = float(actual_exit_price)
+        return {
+            "position_size": size,
+            "signal_exit_notional": size * signal_exit,
+            "actual_exit_notional": size * actual_exit,
+            "exit_slippage_cost": size * (signal_exit - actual_exit),
+            "gross_pnl_before_fees_and_slippage": size * (signal_exit - signal_entry_price),
+            "gross_pnl_after_slippage_before_fees": size * (actual_exit - actual_entry_price),
+        }
+
+    def _signal_entry_price(self) -> float:
+        if self.entry_signal_price is not None:
+            return float(self.entry_signal_price)
+        audit_value = _optional_float(self.entry_audit.get("signal_entry_price"))
+        if audit_value is not None:
+            return audit_value
+        return self._actual_entry_price()
+
+    def _actual_entry_price(self) -> float:
+        if self.entry_price is not None:
+            return float(self.entry_price)
+        audit_value = _optional_float(self.entry_audit.get("actual_entry_price"))
+        if audit_value is not None:
+            return audit_value
+        return 0.0
+
+    def _reset_execution_cost_tracking(self) -> None:
+        self._exit_cost_components: list[dict[str, float]] = []
+        self._partial_exit_fee_total = 0.0
 
     def trades_as_dicts(self) -> list[dict[str, Any]]:
         return [trade.__dict__.copy() for trade in self.trades]

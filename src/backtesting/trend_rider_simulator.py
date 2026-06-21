@@ -79,6 +79,7 @@ class TrendRiderSimulator(TradeSimulator):
         net_proceeds = gross_proceeds - exit_fee
         cost_basis = self.original_entry_total_cost * (close_size / self.initial_position_size)
         pnl = net_proceeds - cost_basis
+        self._record_partial_exit_cost(close_size, price, adjusted_exit_price, exit_fee)
         self.cash += net_proceeds
         self.realized_pnl += pnl
         self.partial_realized_pnl += pnl
@@ -116,7 +117,8 @@ class TrendRiderSimulator(TradeSimulator):
         exit_fee = gross_proceeds * self.fee_rate
         net_proceeds = gross_proceeds - exit_fee
         final_pnl = net_proceeds - self.entry_total_cost
-        total_pnl = self.partial_realized_pnl + final_pnl
+        cost_fields = self._trade_cost_fields(price, adjusted_exit_price, self.position_size, exit_fee)
+        total_pnl = cost_fields["net_pnl"]
         original_cost = self.original_entry_total_cost if self.original_entry_total_cost > 0 else self.entry_total_cost
         return_pct = (total_pnl / original_cost) * 100 if original_cost > 0 else 0.0
         runner_active = self.tp2_done
@@ -130,11 +132,22 @@ class TrendRiderSimulator(TradeSimulator):
             Trade(
                 entry_timestamp=self.entry_timestamp,
                 exit_timestamp=timestamp,
-                entry_price=self.entry_price,
-                exit_price=adjusted_exit_price,
-                position_size=self.initial_position_size,
-                entry_fee=self.entry_fee,
-                exit_fee=exit_fee,
+                signal_entry_price=cost_fields["signal_entry_price"],
+                actual_entry_price=cost_fields["actual_entry_price"],
+                signal_exit_price=cost_fields["signal_exit_price"],
+                actual_exit_price=cost_fields["actual_exit_price"],
+                entry_price=cost_fields["actual_entry_price"],
+                exit_price=cost_fields["actual_exit_price"],
+                position_size=cost_fields["position_size"],
+                entry_slippage_cost=cost_fields["entry_slippage_cost"],
+                exit_slippage_cost=cost_fields["exit_slippage_cost"],
+                total_slippage_cost=cost_fields["total_slippage_cost"],
+                gross_pnl_before_fees_and_slippage=cost_fields["gross_pnl_before_fees_and_slippage"],
+                gross_pnl_after_slippage_before_fees=cost_fields["gross_pnl_after_slippage_before_fees"],
+                entry_fee=cost_fields["entry_fee"],
+                exit_fee=cost_fields["exit_fee"],
+                total_fee=cost_fields["total_fee"],
+                net_pnl=cost_fields["net_pnl"],
                 pnl=total_pnl,
                 return_pct=return_pct,
                 exit_reason=exit_reason,
@@ -171,6 +184,7 @@ class TrendRiderSimulator(TradeSimulator):
         self.exit_reasons[exit_reason] = self.exit_reasons.get(exit_reason, 0) + 1
         self._activate_cooldown(timestamp)
         self.position_size = 0.0
+        self.entry_signal_price = None
         self.entry_price = None
         self.entry_timestamp = None
         self.entry_fee = 0.0
@@ -189,6 +203,7 @@ class TrendRiderSimulator(TradeSimulator):
         self.runner_highest_price = max(self.runner_highest_price, price)
 
     def _reset_trend_rider_state(self) -> None:
+        self._reset_execution_cost_tracking()
         self.initial_position_size = 0.0
         self.original_entry_total_cost = 0.0
         self.partial_realized_pnl = 0.0

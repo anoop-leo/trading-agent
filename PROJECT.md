@@ -66,6 +66,10 @@ Artifacts:
 - hybrid_trend_rider_report.json
 - hybrid_runner_optimization.json
 - market_structure_stop_report.json
+- portfolio_risk_governor_report.json
+- cross_asset_validation.json
+- equity_validation_report.json
+- data_provider_diagnostics.json
 - terminal summary
 
 Architecture:
@@ -153,6 +157,60 @@ Phase 1.14 Research:
 - Use standard Agent Aggressive exits outside STRONG_BULL
 - Reduce runner size above 15% portfolio drawdown and disable new runners above 20% drawdown
 - Track regime periods, disabled runners, profit capture, and top-50 missed-opportunity recheck
+
+Phase 1.15 Research:
+
+- Portfolio Risk Governor
+- Compare Agent Aggressive, Trend Holding, Regime-Gated Trend Holding, and Regime-Gated + Portfolio Governor
+- Track account equity, peak equity, drawdown, and risk state
+- NORMAL uses 100% risk allocation and enables runners
+- CAUTION uses 75% risk allocation and enables runners
+- DEFENSIVE uses 50% risk allocation and disables runners
+- CAPITAL_PRESERVATION uses 25% risk allocation and disables new Trend Holding runners
+- Use 1% risk per trade with ATR volatility adjustment
+- Trigger portfolio stop above 25% drawdown, close active runners, and recover after drawdown falls below 15%
+- Track risk state counts, average position size, average runner size, portfolio stop count, and defensive mode hours
+
+Phase 1.16 Research:
+
+- Cross-Asset Validation
+- Use Agent Aggressive without modifying strategy parameters
+- Default assets: BTCUSDT, ETHUSDT, SOLUSDT, SPY, QQQ
+- Optional assets: TQQQ, NVDA
+- Preferred common history starts in 2018; minimum target is 2020
+- Track return, CAGR, Sharpe, max drawdown, profit factor, win rate, total trades, and profit capture ratio
+- Compute crypto and equity class averages
+- Compute robustness score from positive return, Sharpe > 0.8, drawdown < 25%, profit factor > 1, and win rate > 40%
+- Report rejected-entry filters, losing exit reasons, production asset recommendations, and trend-following assessment
+- Output: outputs/cross_asset_validation.json
+
+Phase 1.16B Research:
+
+- Equity Data Adapter Fix & Validation
+- Adapter: src/data/equity_data_adapter.py
+- Command: python src/main.py validate-equities
+- Required equities: SPY, QQQ
+- Optional equities: IWM, DIA, TQQQ, NVDA
+- Provider fallback chain: Yahoo Finance, Stooq, Alpha Vantage, Twelve Data
+- Alpha Vantage is optional and requires ALPHA_VANTAGE_API_KEY
+- Twelve Data is optional and requires TWELVE_DATA_API_KEY
+- Validate OHLCV exists, duplicate timestamps, missing timestamps, sort order, and minimum 3 years history
+- Generate 4h candles from 1h aggregation when provider lacks 4h
+- Rerun Agent Aggressive unchanged for equity validation
+- Output: outputs/equity_validation_report.json
+- Diagnostics: outputs/data_provider_diagnostics.json
+
+Phase 1.17 Research:
+
+- Exit Optimization Engine
+- Module: src/research/exit_optimization_engine.py
+- Command: python src/main.py backtest --strategy exit_optimization
+- Uses Agent Aggressive baseline entries from 2020-present BTCUSDT
+- Keeps entry logic, stops, sizing, risk filters, market regime, support/resistance, and signal generation unchanged
+- Replays exit-only models: baseline, EMA20 trend rider, EMA20/EMA50 cross, ATR trailing exits, chandelier exit, partial-profit trend ride, multi-target exits, trend-strength ADX exit, volatility adaptive exit, and hybrid partial/EMA20/ATR exits
+- Ranks by profit capture ratio, Sharpe, total return, drawdown, and profit factor
+- Output: outputs/exit_optimization_report.json
+- Rankings: outputs/exit_model_rankings.json
 
 Future phases:
 

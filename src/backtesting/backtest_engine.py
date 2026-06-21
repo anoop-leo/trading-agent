@@ -14,6 +14,11 @@ import pandas as pd
 from backtesting.performance_metrics import calculate_performance_metrics
 from backtesting.profiles import StrategyProfile, get_strategy_profile
 from backtesting.trade_simulator import TradeSimulator
+from data.equity_data_adapter import (
+    download_equity_timeframe,
+    normalize_yahoo_chart as normalize_yahoo_chart_payload,
+    resample_ohlcv as resample_equity_ohlcv,
+)
 from decision.decision_engine import apply_multi_timeframe_alignment
 from risk.structure_stop_engine import StructureStopEngine
 from scoring.multi_timeframe_skill import analyze_multi_timeframe
@@ -25,6 +30,7 @@ from trading_agent.main import analyze_indicator_frame, build_timeframe_signal
 from trading_agent.models import OHLCV_COLUMNS
 from trading_agent.output import macd_direction
 from trading_agent.scoring import calculate_volume_ratio
+from risk.portfolio_risk_governor import calculate_atr_moving_average
 
 
 INTERVAL_TO_MILLISECONDS = {
@@ -60,6 +66,7 @@ class BacktestConfig:
     cache_dir: Path = Path("data/cache")
     output_dir: Path = Path("outputs")
     binance_base_url: str = "https://api.binance.com"
+    yahoo_base_url: str = "https://query1.finance.yahoo.com"
     request_timeout_seconds: float = 10.0
     progress_interval: int = 1000
     profile: str = "balanced"
@@ -69,6 +76,7 @@ class BacktestConfig:
     use_hybrid_trend_rider: bool = False
     use_trend_holding: bool = False
     use_regime_gated_trend_holding: bool = False
+    use_portfolio_governor: bool = False
     hybrid_runner_profile: str | None = None
     auxiliary_timeframes: tuple[str, ...] = ()
     close_open_position_on_end: bool = False
@@ -141,6 +149,7 @@ def run_backtest(
         config.use_hybrid_trend_rider,
         config.use_trend_holding,
         config.use_regime_gated_trend_holding,
+        config.use_portfolio_governor,
     )
     simulator = simulator_class(
         initial_capital=config.initial_capital,
@@ -244,6 +253,7 @@ def run_backtest(
             support=primary_analysis.support_resistance.support,
         )
         decision_record.update(structure_stop.to_signal_fields())
+        decision_record["atr_ma"] = calculate_atr_moving_average(sliced_frames[config.primary_timeframe])
         decisions.append(decision_record)
         snapshot = simulator.process_signal(decision_record)
         decision_record["rejected_entry_reasons"] = simulator.last_rejected_entry_reasons.copy()
@@ -311,7 +321,12 @@ def _simulator_class(
     use_hybrid_trend_rider: bool = False,
     use_trend_holding: bool = False,
     use_regime_gated_trend_holding: bool = False,
+    use_portfolio_governor: bool = False,
 ) -> type[TradeSimulator]:
+    if use_portfolio_governor:
+        from backtesting.portfolio_governor_simulator import PortfolioGovernorSimulator
+
+        return PortfolioGovernorSimulator
     if use_regime_gated_trend_holding:
         from backtesting.regime_gated_trend_holding_simulator import RegimeGatedTrendHoldingSimulator
 
@@ -427,12 +442,13 @@ def load_or_download_timeframes(config: BacktestConfig, timeframes: tuple[str, .
         if cache_path.exists() and not config.refresh_cache:
             frame = _load_range_aware_cache(config, timeframe, cache_path)
         else:
-            frame = download_binance_history(
+            frame = download_market_history(
                 symbol=config.symbol,
                 interval=timeframe,
                 start=config.start,
                 end=config.end,
-                base_url=config.binance_base_url,
+                binance_base_url=config.binance_base_url,
+                yahoo_base_url=config.yahoo_base_url,
                 timeout_seconds=config.request_timeout_seconds,
             )
         write_cached_ohlcv(frame, cache_path)
@@ -462,6 +478,16 @@ def _load_range_aware_cache(config: BacktestConfig, timeframe: str, cache_path: 
                     timeout_seconds=config.request_timeout_seconds,
                     allow_empty=True,
                 )
+                if is_crypto_symbol(config.symbol)
+                else download_equity_history(
+                    symbol=config.symbol,
+                    interval=timeframe,
+                    start=requested_start.isoformat(),
+                    end=missing_end.isoformat(),
+                    base_url=config.yahoo_base_url,
+                    timeout_seconds=config.request_timeout_seconds,
+                    allow_empty=True,
+                )
             )
 
     needs_append = requested_end is None or requested_end > cache_end
@@ -478,9 +504,52 @@ def _load_range_aware_cache(config: BacktestConfig, timeframe: str, cache_path: 
                 timeout_seconds=config.request_timeout_seconds,
                 allow_empty=True,
             )
+            if is_crypto_symbol(config.symbol)
+            else download_equity_history(
+                symbol=config.symbol,
+                interval=timeframe,
+                start=missing_start.isoformat(),
+                end=missing_end,
+                base_url=config.yahoo_base_url,
+                timeout_seconds=config.request_timeout_seconds,
+                allow_empty=True,
+            )
         )
 
     return _merge_ohlcv_frames(frames)
+
+
+def download_market_history(
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str,
+    binance_base_url: str = "https://api.binance.com",
+    yahoo_base_url: str = "https://query1.finance.yahoo.com",
+    timeout_seconds: float = 10.0,
+    allow_empty: bool = False,
+) -> pd.DataFrame:
+    """Download public historical candles for supported crypto and equity symbols."""
+
+    if is_crypto_symbol(symbol):
+        return download_binance_history(
+            symbol=symbol,
+            interval=interval,
+            start=start,
+            end=end,
+            base_url=binance_base_url,
+            timeout_seconds=timeout_seconds,
+            allow_empty=allow_empty,
+        )
+    return download_equity_history(
+        symbol=symbol,
+        interval=interval,
+        start=start,
+        end=end,
+        base_url=yahoo_base_url,
+        timeout_seconds=timeout_seconds,
+        allow_empty=allow_empty,
+    )
 
 
 def download_binance_history(
@@ -527,6 +596,62 @@ def download_binance_history(
     if not all_rows:
         raise BacktestError(f"No historical candles found for {symbol} {interval}.")
     return normalize_klines(all_rows).drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+
+
+def download_equity_history(
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str,
+    base_url: str = "https://query1.finance.yahoo.com",
+    timeout_seconds: float = 10.0,
+    allow_empty: bool = False,
+) -> pd.DataFrame:
+    """Download public equity OHLCV candles through the provider fallback adapter."""
+
+    del base_url
+    try:
+        frame = download_equity_timeframe(
+            symbol=symbol,
+            interval=interval,
+            start=start,
+            end=end,
+            timeout_seconds=timeout_seconds,
+        )
+    except DataLoadError:
+        if allow_empty:
+            return _empty_ohlcv_frame()
+        raise
+    if frame.empty and allow_empty:
+        return _empty_ohlcv_frame()
+    if frame.empty:
+        raise BacktestError(f"No historical candles found for {symbol} {interval}.")
+    return frame
+
+
+def normalize_yahoo_chart(payload: dict[str, Any], symbol: str, interval: str) -> pd.DataFrame:
+    return normalize_yahoo_chart_payload(payload, symbol, interval)
+
+
+def validate_downloaded_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame[list(OHLCV_COLUMNS)].copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    for column in ("open", "high", "low", "close", "volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["open", "high", "low", "close"])
+    return frame.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+
+
+def _resample_ohlcv(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    return resample_equity_ohlcv(frame, timeframe)
+
+
+def _list_value(values: list[Any], index: int) -> Any:
+    return values[index] if index < len(values) else None
+
+
+def is_crypto_symbol(symbol: str) -> bool:
+    return symbol.upper().endswith("USDT")
 
 
 def _empty_ohlcv_frame() -> pd.DataFrame:

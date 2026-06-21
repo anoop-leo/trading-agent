@@ -198,7 +198,7 @@ def calculate_atr(frame: pd.DataFrame, period: int = 14) -> float | None:
     required = {"high", "low", "close"}
     if not required.issubset(frame.columns):
         return None
-    data = frame[list(required)].astype(float).reset_index(drop=True)
+    data = frame[list(required)].astype(float).tail(period + 1).reset_index(drop=True)
     true_ranges: list[float] = []
     previous_close: float | None = None
     for row in data.itertuples(index=False):

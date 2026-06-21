@@ -722,6 +722,29 @@ Backtesting Engine
 - Compares Agent Aggressive, Trend Holding, and Regime-Gated Trend Holding for Phase 1.14
 - Regime-Gated Trend Holding activates runners only in `STRONG_BULL`, defined by daily EMA20 > EMA50 > EMA200, daily RSI > 55, daily MACD bullish, and weekly close > weekly EMA20
 - Regime gate reduces runner size by 50% above 15% portfolio drawdown and disables new runners above 20% portfolio drawdown
+- Compares Agent Aggressive, Trend Holding, Regime-Gated Trend Holding, and Regime-Gated + Portfolio Governor for Phase 1.15
+- Portfolio Governor tracks current equity, peak equity, drawdown, risk state, portfolio stops, volatility-adjusted position size, average position size, and average runner size
+- Risk states are `NORMAL`, `CAUTION`, `DEFENSIVE`, and `CAPITAL_PRESERVATION`
+- Position sizing uses 1% risk per trade, then adjusts allocation by drawdown state and ATR volatility
+- Portfolio stop triggers above 25% drawdown, closes active runners, disables new runners, and recovers only after drawdown falls below 15%
+- Run with `python src/main.py backtest --strategy regime_gated_portfolio_governor`
+- Writes `outputs/portfolio_risk_governor_report.json`
+- Cross-Asset Validation tests Agent Aggressive across BTCUSDT, ETHUSDT, SOLUSDT, SPY, and QQQ without per-asset tuning
+- Optional validation assets are TQQQ and NVDA
+- Cross-Asset Validation ranks assets by return, Sharpe, drawdown, and robustness score
+- Robustness score is 100 points across positive return, Sharpe > 0.8, drawdown < 25%, profit factor > 1, and win rate > 40%
+- Run with `python src/main.py backtest --strategy cross_asset_validation`
+- Restrict assets with `python src/main.py backtest --strategy cross_asset_validation --assets BTCUSDT ETHUSDT SOLUSDT`
+- Writes `outputs/cross_asset_validation.json`
+- Equity Data Adapter validates SPY and QQQ through Yahoo Finance, Stooq, optional Alpha Vantage, and optional Twelve Data fallbacks
+- Alpha Vantage requires `ALPHA_VANTAGE_API_KEY`; Twelve Data requires `TWELVE_DATA_API_KEY`
+- 4h equity candles are generated from 1h aggregation when providers do not provide 4h directly
+- Run equity validation with `python src/main.py validate-equities`
+- Writes `outputs/equity_validation_report.json` and `outputs/data_provider_diagnostics.json`
+- Exit Optimization tests production Agent Aggressive entries with alternate exit-only models for Phase 1.17
+- Exit models include baseline, EMA20 trend rider, EMA20/EMA50 cross, ATR trailing stops, chandelier exit, partial-profit trend ride, multi-target exits, ADX trend strength, volatility adaptive exit, and hybrid partial/EMA20/ATR variants
+- Run with `python src/main.py backtest --strategy exit_optimization`
+- Writes `outputs/exit_optimization_report.json` and `outputs/exit_model_rankings.json`
 
 Decision Engine v2 considers setup and position mode together. In no-position mode, `BREAKOUT` and `TREND_FOLLOWING` map to `BUY`, `PULLBACK` maps to `BUY WATCH`, `RANGE_BOUND` maps to `WAIT`, and `BEAR_TREND` maps to `AVOID LONG`. In holding-position mode, bullish continuation can map to `ADD` or `HOLD`, mixed setups map to `HOLD`, and bearish setups map to `REDUCE` or `EXIT`.
 

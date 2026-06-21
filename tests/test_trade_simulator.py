@@ -46,6 +46,37 @@ class TradeSimulatorTests(unittest.TestCase):
         self.assertAlmostEqual(simulator.entry_price, 100.05)
         self.assertAlmostEqual(simulator.entry_fee, 2.4975024975024978)
 
+    def test_trade_record_reconciles_fee_slippage_and_net_pnl(self) -> None:
+        simulator = TradeSimulator(initial_capital=10000, fee_rate=0.001, slippage_rate=0.0005)
+        simulator.process_signal(signal(final_decision="BUY", price=100.0, stop_loss=90.0, target_1=105.0))
+        simulator.process_signal(signal(timestamp="2024-01-03T01:00:00+00:00", price=110.0))
+
+        trade = simulator.trades[0]
+        self.assertAlmostEqual(trade.signal_entry_price, 100.0)
+        self.assertAlmostEqual(trade.actual_entry_price, 100.05)
+        self.assertAlmostEqual(trade.signal_exit_price, 110.0)
+        self.assertAlmostEqual(trade.actual_exit_price, 109.945)
+        self.assertAlmostEqual(
+            trade.entry_slippage_cost,
+            trade.position_size * (trade.actual_entry_price - trade.signal_entry_price),
+        )
+        self.assertAlmostEqual(
+            trade.exit_slippage_cost,
+            trade.position_size * (trade.signal_exit_price - trade.actual_exit_price),
+        )
+        self.assertAlmostEqual(trade.total_slippage_cost, trade.entry_slippage_cost + trade.exit_slippage_cost)
+        self.assertAlmostEqual(
+            trade.gross_pnl_before_fees_and_slippage,
+            trade.position_size * (trade.signal_exit_price - trade.signal_entry_price),
+        )
+        self.assertAlmostEqual(
+            trade.gross_pnl_after_slippage_before_fees,
+            trade.position_size * (trade.actual_exit_price - trade.actual_entry_price),
+        )
+        self.assertAlmostEqual(trade.total_fee, trade.entry_fee + trade.exit_fee)
+        self.assertAlmostEqual(trade.net_pnl, trade.gross_pnl_after_slippage_before_fees - trade.total_fee)
+        self.assertAlmostEqual(trade.net_pnl, trade.pnl)
+
     def test_hold_does_not_open_trade(self) -> None:
         simulator = TradeSimulator(initial_capital=10000)
 

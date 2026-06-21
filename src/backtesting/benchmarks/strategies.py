@@ -367,6 +367,45 @@ class RegimeGatedTrendHoldingStrategy:
         )
 
 
+class RegimeGatedPortfolioGovernorStrategy:
+    name = "regime_gated_portfolio_governor"
+
+    def run(
+        self,
+        *,
+        config: Any,
+        frames: dict[str, pd.DataFrame],
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> BenchmarkResult:
+        _emit(progress_callback, self.name)
+        from dataclasses import replace
+
+        from backtesting.backtest_engine import run_backtest
+
+        result = run_backtest(
+            replace(
+                config,
+                profile="aggressive",
+                strategy_profile_override=None,
+                use_portfolio_governor=True,
+                auxiliary_timeframes=("1w",),
+            ),
+            cached_data=frames,
+            progress_callback=progress_callback,
+        )
+        return BenchmarkResult(
+            name=self.name,
+            symbol=result.symbol,
+            start_date=result.start_date,
+            end_date=result.end_date,
+            initial_capital=result.initial_capital,
+            final_equity=result.final_equity,
+            metrics=result.metrics,
+            trades=result.trades,
+            equity_curve=result.equity_curve,
+        )
+
+
 class HybridTrendRiderStrategy:
     def __init__(self, name: str = "hybrid_trend_rider") -> None:
         self.name = name

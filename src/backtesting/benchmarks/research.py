@@ -18,6 +18,7 @@ from backtesting.benchmarks.strategies import (
     BenchmarkStrategy,
     BullModeAgentStrategy,
     HybridTrendRiderStrategy,
+    RegimeGatedPortfolioGovernorStrategy,
     RegimeGatedTrendHoldingStrategy,
     RSITrendStrategy,
     TrendHoldingStrategy,
@@ -345,6 +346,36 @@ def run_regime_gated_trend_holding_analysis(
     return {
         "regime_gated_trend_holding_report": payload,
         "artifacts": {"regime_gated_trend_holding_report": str(path)},
+    }
+
+
+def run_portfolio_risk_governor_analysis(
+    config: Any,
+    cached_data: dict[str, pd.DataFrame] | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Run Phase 1.15 Portfolio Risk Governor comparison."""
+
+    history_config = replace(config, end=_extend_end_for_profit_capture(config.end))
+    execution_config = replace(config, close_open_position_on_end=True)
+    frames = _load_required_frames(history_config, cached_data)
+    strategies: tuple[BenchmarkStrategy, ...] = (
+        AgentAggressiveStrategy(),
+        TrendHoldingStrategy(),
+        RegimeGatedTrendHoldingStrategy(),
+        RegimeGatedPortfolioGovernorStrategy(),
+    )
+    results = run_benchmark_suite(
+        execution_config,
+        cached_data=frames,
+        progress_callback=progress_callback,
+        strategies=strategies,
+    )
+    payload = portfolio_risk_governor_report_payload(results, frames[execution_config.primary_timeframe])
+    path = write_portfolio_risk_governor_output(execution_config.output_dir, payload)
+    return {
+        "portfolio_risk_governor_report": payload,
+        "artifacts": {"portfolio_risk_governor_report": str(path)},
     }
 
 
@@ -887,6 +918,91 @@ def regime_gated_trend_holding_report_payload(
     }
 
 
+def portfolio_risk_governor_report_payload(
+    results: dict[str, BenchmarkResult],
+    price_history: pd.DataFrame,
+) -> dict[str, Any]:
+    capture = profit_capture_payload(results, price_history)
+    targets = {
+        "return_pct": 120.0,
+        "profit_capture_ratio": 0.10,
+        "max_drawdown_pct": 25.0,
+        "sharpe_ratio": 0.80,
+    }
+    rows: dict[str, Any] = {}
+    for name, result in results.items():
+        capture_metrics = capture["strategies"][name]
+        row = {
+            "total_return_pct": result.metrics.get("total_return_pct"),
+            "cagr": result.metrics.get("cagr"),
+            "max_drawdown_pct": result.metrics.get("max_drawdown_pct"),
+            "sharpe_ratio": result.metrics.get("sharpe_ratio"),
+            "profit_factor": result.metrics.get("profit_factor"),
+            "total_trades": result.metrics.get("total_trades"),
+            "win_rate": result.metrics.get("win_rate"),
+            "profit_capture_ratio": capture_metrics.get("profit_capture_ratio"),
+            "risk_state_counts": result.metrics.get("risk_state_counts", {}),
+            "average_position_size": result.metrics.get("average_position_size"),
+            "average_runner_size": result.metrics.get("average_runner_size"),
+            "portfolio_stop_count": result.metrics.get("portfolio_stop_count", 0),
+            "defensive_mode_hours": result.metrics.get("defensive_mode_hours", 0.0),
+            "runner_activation_count": result.metrics.get("runner_activation_count", result.metrics.get("runner_activations", 0)),
+            "runner_disabled_count": result.metrics.get("runner_disabled_count", 0),
+            "profit_capture": capture_metrics,
+        }
+        row["target_assessment"] = {
+            "return_target_met": _target_gt(row.get("total_return_pct"), targets["return_pct"]),
+            "profit_capture_target_met": _target_gt(row.get("profit_capture_ratio"), targets["profit_capture_ratio"]),
+            "drawdown_target_met": _target_lt(row.get("max_drawdown_pct"), targets["max_drawdown_pct"]),
+            "sharpe_target_met": _target_gt(row.get("sharpe_ratio"), targets["sharpe_ratio"]),
+        }
+        row["target_assessment"]["all_targets_met"] = all(row["target_assessment"].values())
+        rows[name] = row
+
+    rankings = {
+        "by_sharpe": _rank_metric(rows, "sharpe_ratio", reverse=True),
+        "by_drawdown": _rank_metric(rows, "max_drawdown_pct", reverse=False),
+        "by_return": _rank_metric(rows, "total_return_pct", reverse=True),
+    }
+    return {
+        "goal": "Preserve trend capture while reducing portfolio drawdown below 25%.",
+        "targets": targets,
+        "risk_state_rules": {
+            "NORMAL": {"drawdown": "< 10%", "allocation": "100%", "runner": "enabled"},
+            "CAUTION": {"drawdown": ">= 10%", "allocation": "75%", "runner": "enabled"},
+            "DEFENSIVE": {"drawdown": ">= 15%", "allocation": "50%", "runner": "disabled"},
+            "CAPITAL_PRESERVATION": {
+                "drawdown": ">= 20%",
+                "allocation": "25%",
+                "runner": "disabled",
+                "trend_holding": "disabled",
+            },
+        },
+        "position_sizing": {
+            "risk_per_trade": "1% of current equity",
+            "formula": "position_size = risk_amount / (entry_price - stop_price)",
+            "volatility_adjustment": "if ATR > ATR_MA, multiply size by ATR_MA / ATR clamped to 0.25-1.0",
+        },
+        "portfolio_stop": {
+            "trigger": "drawdown > 25%",
+            "actions": ["close active runners", "disable new runners", "switch to defensive sizing"],
+            "recovery": "portfolio stop deactivates once drawdown < 15%",
+        },
+        "rankings": rankings,
+        "comparison": {
+            "trend_holding_vs_agent": _strategy_delta(rows.get("agent_aggressive"), rows.get("trend_holding")),
+            "regime_gated_vs_agent": _strategy_delta(rows.get("agent_aggressive"), rows.get("regime_gated_trend_holding")),
+            "governor_vs_agent": _strategy_delta(rows.get("agent_aggressive"), rows.get("regime_gated_portfolio_governor")),
+            "governor_vs_regime_gated": _strategy_delta(
+                rows.get("regime_gated_trend_holding"),
+                rows.get("regime_gated_portfolio_governor"),
+            ),
+        },
+        "recommendation": _portfolio_governor_recommendation(rows, targets),
+        "strategies": rows,
+    }
+
+
 def write_trend_rider_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "trend_rider_analysis.json"
@@ -904,6 +1020,13 @@ def write_trend_holding_output(output_dir: Path, payload: dict[str, Any]) -> Pat
 def write_regime_gated_trend_holding_output(output_dir: Path, payload: dict[str, Any]) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "regime_gated_trend_holding_report.json"
+    _write_json(path, payload)
+    return path
+
+
+def write_portfolio_risk_governor_output(output_dir: Path, payload: dict[str, Any]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "portfolio_risk_governor_report.json"
     _write_json(path, payload)
     return path
 
@@ -1220,6 +1343,45 @@ def _regime_gated_recommendation(rows: dict[str, dict[str, Any]], targets: dict[
     return {
         "production_default": "agent_aggressive",
         "reason": "Keep Agent Aggressive as production default until the gated runner meets return, capture, drawdown, and Sharpe targets.",
+    }
+
+
+def _portfolio_governor_recommendation(rows: dict[str, dict[str, Any]], targets: dict[str, float]) -> dict[str, Any]:
+    candidate = rows.get("regime_gated_portfolio_governor")
+    baseline = rows.get("agent_aggressive")
+    regime_gated = rows.get("regime_gated_trend_holding")
+    if candidate is None:
+        return {
+            "production_default": "agent_aggressive",
+            "reason": "Portfolio Governor did not produce comparable metrics.",
+        }
+    if candidate.get("target_assessment", {}).get("all_targets_met"):
+        return {
+            "production_default": "regime_gated_portfolio_governor",
+            "reason": "Portfolio Governor met the Phase 1.15 return, Sharpe, profit-capture, and drawdown targets.",
+        }
+
+    candidate_drawdown = _float_or_none(candidate.get("max_drawdown_pct"))
+    candidate_sharpe = _float_or_none(candidate.get("sharpe_ratio"))
+    baseline_sharpe = _float_or_none(baseline.get("sharpe_ratio")) if baseline else None
+    regime_drawdown = _float_or_none(regime_gated.get("max_drawdown_pct")) if regime_gated else None
+    if (
+        candidate_drawdown is not None
+        and regime_drawdown is not None
+        and candidate_drawdown < regime_drawdown
+        and candidate_drawdown < targets["max_drawdown_pct"]
+        and candidate_sharpe is not None
+        and baseline_sharpe is not None
+        and candidate_sharpe >= baseline_sharpe
+    ):
+        return {
+            "production_default": "regime_gated_portfolio_governor",
+            "reason": "Portfolio Governor reduced drawdown below target and preserved risk-adjusted return versus Agent Aggressive.",
+        }
+    return {
+        "production_default": "agent_aggressive",
+        "candidate": "regime_gated_portfolio_governor",
+        "reason": "Keep Agent Aggressive as production default until the governor meets the full return, Sharpe, capture, and drawdown target set.",
     }
 
 
