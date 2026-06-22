@@ -8,6 +8,10 @@ import unittest
 
 import pandas as pd
 
+from decision.recommendation import RiskDecision
+from risk.live_risk_engine import LiveRiskEngine
+from risk.portfolio_state import PortfolioState
+from risk.risk_config import RiskEngineConfig
 from shadow_trading.coinbase_shadow import (
     CoinbaseCandleProvider,
     ShadowPortfolio,
@@ -130,6 +134,74 @@ class CoinbaseShadowTradingTests(unittest.TestCase):
         self.assertIsNone(trade)
         self.assertIn("high_execution_cost", portfolio.rejected_signals[0]["reasons"])
 
+    def test_default_portfolio_has_no_risk_engine_and_behaves_unchanged(self) -> None:
+        portfolio = ShadowPortfolio(10000, 2500, 0.0015, 0.001)
+
+        self.assertIsNone(portfolio.risk_engine)
+        self.assertIsNone(portfolio.portfolio_state)
+
+        execution_cost = {"all_in_cost_per_side": 0.0012, "price_slippage_pct": 0.0002, "depth_supported": True}
+        action, _trade = portfolio.process_signal(_signal(final_decision="BUY", price=100.0, target_1=105.0), execution_cost)
+
+        self.assertEqual(action, "BUY")
+        self.assertEqual(portfolio.open_position.notional, 2500)
+
+    def test_risk_engine_approves_entry_at_full_intended_size(self) -> None:
+        risk_engine = LiveRiskEngine(RiskEngineConfig(total_portfolio_value_usd=330_000.0))
+        state = PortfolioState.from_config_targets(risk_engine.config)
+        portfolio = ShadowPortfolio(
+            10000, 2500, 0.0015, 0.001, risk_engine=risk_engine, portfolio_state=state, symbol="BTC",
+        )
+        execution_cost = {"all_in_cost_per_side": 0.0012, "price_slippage_pct": 0.0002, "depth_supported": True}
+
+        action, _trade = portfolio.process_signal(_signal(final_decision="BUY", price=100.0, target_1=105.0), execution_cost)
+
+        self.assertEqual(action, "BUY")
+        self.assertEqual(portfolio.open_position.notional, 2500)
+        self.assertEqual(portfolio.risk_decision_counts["approved"], 1)
+
+    def test_risk_engine_blocks_entry_during_drawdown_for_non_core_symbol(self) -> None:
+        risk_engine = LiveRiskEngine(RiskEngineConfig(total_portfolio_value_usd=330_000.0))
+        state = PortfolioState(
+            total_value_usd=240_000.0, peak_value_usd=330_000.0,
+            cash_usd=42_900.0, core_usd=120_000.0, growth_usd=50_000.0, speculative_usd=27_100.0,
+        )
+        sink_calls: list[RiskDecision] = []
+        portfolio = ShadowPortfolio(
+            10000, 2500, 0.0015, 0.001,
+            risk_engine=risk_engine, portfolio_state=state, symbol="ETH",
+            risk_decision_sink=sink_calls.append,
+        )
+        execution_cost = {"all_in_cost_per_side": 0.0012, "price_slippage_pct": 0.0002, "depth_supported": True}
+
+        action, trade = portfolio.process_signal(_signal(final_decision="BUY", price=100.0, target_1=105.0), execution_cost)
+
+        self.assertIn(action, {"HOLD", "AVOID"})
+        self.assertIsNone(trade)
+        self.assertIsNone(portfolio.open_position)
+        self.assertEqual(portfolio.risk_decision_counts["blocked"], 1)
+        self.assertIn("risk_engine_blocked", portfolio.rejected_signals[0]["reasons"])
+        self.assertEqual(len(sink_calls), 1)
+        self.assertEqual(sink_calls[0].status, "blocked")
+
+    def test_risk_engine_trims_entry_to_remaining_bucket_room(self) -> None:
+        risk_engine = LiveRiskEngine(RiskEngineConfig(total_portfolio_value_usd=330_000.0, speculative_position_max_pct=100.0))
+        state = PortfolioState(
+            total_value_usd=330_000.0, peak_value_usd=330_000.0,
+            cash_usd=42_900.0, core_usd=148_500.0, growth_usd=99_000.0, speculative_usd=38_000.0,
+        )
+        portfolio = ShadowPortfolio(
+            10000, 5000, 0.0015, 0.001, risk_engine=risk_engine, portfolio_state=state, symbol="HYPE",
+        )
+        execution_cost = {"all_in_cost_per_side": 0.0012, "price_slippage_pct": 0.0002, "depth_supported": True}
+
+        action, _trade = portfolio.process_signal(_signal(final_decision="BUY", price=100.0, target_1=105.0), execution_cost)
+
+        self.assertEqual(action, "BUY")
+        self.assertLess(portfolio.open_position.notional, 5000)
+        self.assertAlmostEqual(portfolio.open_position.notional, 1600.0, places=2)
+        self.assertEqual(portfolio.risk_decision_counts["adjusted"], 1)
+
     def test_run_shadow_trading_writes_artifacts_and_keeps_live_disabled(self) -> None:
         calls = []
 
@@ -197,6 +269,49 @@ class CoinbaseShadowTradingTests(unittest.TestCase):
                 false_avoid = json.load(handle)
             self.assertEqual(false_avoid["total_signals"], 1)
             self.assertFalse(false_avoid["target_reached"])
+
+    def test_risk_engine_disabled_by_default_reports_zero_decisions(self) -> None:
+        def opener(request, timeout):
+            if "/market/product_book" in request.full_url:
+                return FakeResponse(PRODUCT_BOOK_PAYLOAD)
+            return FakeResponse({"candles": _coinbase_candles(230, 3600)})
+
+        with TemporaryDirectory() as temp_dir:
+            config = ShadowTradingConfig(
+                duration_days=1 / 24, cycle_interval_seconds=0, cycle_limit=1,
+                output_dir=Path(temp_dir), history_limit=220,
+            )
+            payload = run_coinbase_shadow_trading(
+                config, opener=opener, sleeper=lambda _seconds: None,
+                now_fn=lambda: datetime(2026, 6, 15, 14, tzinfo=UTC),
+            )
+
+            summary = payload["shadow_summary_30d"]
+            self.assertEqual(summary["risk_engine"], {"enabled": False, "decision_counts": {"approved": 0, "adjusted": 0, "blocked": 0}})
+            self.assertFalse((Path(temp_dir) / "risk_decision_log.jsonl").exists())
+
+    def test_risk_engine_enabled_flag_is_wired_through_without_crashing(self) -> None:
+        def opener(request, timeout):
+            if "/market/product_book" in request.full_url:
+                return FakeResponse(PRODUCT_BOOK_PAYLOAD)
+            return FakeResponse({"candles": _coinbase_candles(230, 3600)})
+
+        with TemporaryDirectory() as temp_dir:
+            config = ShadowTradingConfig(
+                duration_days=1 / 24, cycle_interval_seconds=0, cycle_limit=1,
+                output_dir=Path(temp_dir), history_limit=220,
+                risk_engine_enabled=True,
+                risk_config_path=Path(temp_dir) / "risk_config.json",
+                portfolio_state_path=Path(temp_dir) / "portfolio_state.json",
+            )
+            payload = run_coinbase_shadow_trading(
+                config, opener=opener, sleeper=lambda _seconds: None,
+                now_fn=lambda: datetime(2026, 6, 15, 14, tzinfo=UTC),
+            )
+
+            summary = payload["shadow_summary_30d"]
+            self.assertTrue(summary["risk_engine"]["enabled"])
+            self.assertEqual(sum(summary["risk_engine"]["decision_counts"].values()), 0)
 
     def test_collect_enriched_shadow_signals_appends_until_target(self) -> None:
         calls = []

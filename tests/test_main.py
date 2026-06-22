@@ -173,6 +173,26 @@ class MainTests(unittest.TestCase):
         self.assertEqual(args.target_signal_count, 50)
         self.assertTrue(args.no_resume_signal_collection)
 
+    def test_shadow_coinbase_parser_defaults_risk_engine_disabled(self) -> None:
+        args = build_shadow_coinbase_parser().parse_args([])
+
+        self.assertFalse(args.enable_risk_engine)
+        self.assertIsNone(args.risk_config_path)
+        self.assertIsNone(args.portfolio_state_path)
+
+    def test_shadow_coinbase_parser_accepts_risk_engine_flags(self) -> None:
+        args = build_shadow_coinbase_parser().parse_args(
+            [
+                "--enable-risk-engine",
+                "--risk-config-path", "config/test_risk_config.json",
+                "--portfolio-state-path", "data/test_portfolio_state.json",
+            ]
+        )
+
+        self.assertTrue(args.enable_risk_engine)
+        self.assertEqual(args.risk_config_path, Path("config/test_risk_config.json"))
+        self.assertEqual(args.portfolio_state_path, Path("data/test_portfolio_state.json"))
+
     def test_collect_shadow_signals_parser_accepts_quick_test_options(self) -> None:
         args = build_collect_shadow_signals_parser().parse_args(
             ["--product", "BTC-USD", "--target-signals", "3", "--interval-seconds", "60", "--reset"]

@@ -630,6 +630,23 @@ def build_shadow_coinbase_parser() -> argparse.ArgumentParser:
     parser.add_argument("--order-book-limit", type=int, default=50, help="Coinbase product-book depth limit.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"), help="Shadow artifact output directory.")
     parser.add_argument("--quiet", action="store_true", help="Disable shadow cycle progress logging.")
+    parser.add_argument(
+        "--enable-risk-engine",
+        action="store_true",
+        help="Gate shadow trading entries through the live risk engine (bucket caps, drawdown circuit breaker).",
+    )
+    parser.add_argument(
+        "--risk-config-path",
+        type=Path,
+        default=None,
+        help="Path to risk_config.json. Defaults to config/risk_config.json. Only used with --enable-risk-engine.",
+    )
+    parser.add_argument(
+        "--portfolio-state-path",
+        type=Path,
+        default=None,
+        help="Path to portfolio_state.json. Defaults to data/portfolio_state.json. Only used with --enable-risk-engine.",
+    )
     return parser
 
 
@@ -1035,6 +1052,8 @@ def _run_merge_coinbase_execution_audit_command(argv: Sequence[str] | None = Non
 
 
 def _run_shadow_coinbase_command(argv: Sequence[str] | None = None) -> dict[str, Any]:
+    from risk.portfolio_state import DEFAULT_PORTFOLIO_STATE_PATH
+    from risk.risk_config import DEFAULT_RISK_CONFIG_PATH
     from shadow_trading.coinbase_shadow import ShadowTradingConfig, run_coinbase_shadow_trading
 
     args = build_shadow_coinbase_parser().parse_args(argv)
@@ -1054,6 +1073,9 @@ def _run_shadow_coinbase_command(argv: Sequence[str] | None = None) -> dict[str,
         base_url=args.coinbase_base_url,
         timeout_seconds=args.timeout_seconds,
         order_book_limit=args.order_book_limit,
+        risk_engine_enabled=args.enable_risk_engine,
+        risk_config_path=args.risk_config_path or DEFAULT_RISK_CONFIG_PATH,
+        portfolio_state_path=args.portfolio_state_path or DEFAULT_PORTFOLIO_STATE_PATH,
     )
     progress_callback = None if args.quiet else _print_shadow_progress
     payload = run_coinbase_shadow_trading(config, progress_callback=progress_callback)
@@ -1079,6 +1101,7 @@ def _run_shadow_coinbase_command(argv: Sequence[str] | None = None) -> dict[str,
         "system_uptime_pct": summary["system_uptime_pct"],
         "api_error_rate": summary["api_error_rate"],
         "final_verdict": summary["final_verdict"],
+        "risk_engine": summary["risk_engine"],
         "artifacts": payload["artifacts"],
     }
 

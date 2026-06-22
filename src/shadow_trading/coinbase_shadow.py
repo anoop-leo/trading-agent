@@ -25,6 +25,12 @@ from data.coinbase_execution_cost_audit import (
     normalize_coinbase_product_id,
 )
 from decision.decision_engine import apply_multi_timeframe_alignment
+from decision.investor_recommendation import bucket_for_crypto_symbol
+from decision.recommendation import PositionRecommendation, RiskDecision
+from risk.live_risk_engine import LiveRiskEngine
+from risk.portfolio_state import DEFAULT_PORTFOLIO_STATE_PATH, PortfolioState, load_portfolio_state
+from risk.risk_config import DEFAULT_RISK_CONFIG_PATH, load_risk_config
+from risk.risk_decision_log import append_risk_decision
 from risk.structure_stop_engine import calculate_atr
 from scoring.multi_timeframe_skill import analyze_multi_timeframe
 from trading_agent.data import DataLoadError
@@ -227,6 +233,9 @@ class ShadowTradingConfig:
     emergency_stop_if_api_errors_exceed_5_percent: bool = True
     target_signal_count: int | None = None
     resume_signal_collection: bool = True
+    risk_engine_enabled: bool = False
+    risk_config_path: Path = DEFAULT_RISK_CONFIG_PATH
+    portfolio_state_path: Path = DEFAULT_PORTFOLIO_STATE_PATH
 
 
 @dataclass(frozen=True)
@@ -355,16 +364,25 @@ class ShadowPortfolio:
         intended_order_size_usd: float,
         max_all_in_cost_per_side: float,
         fee_rate: float,
+        risk_engine: LiveRiskEngine | None = None,
+        portfolio_state: PortfolioState | None = None,
+        symbol: str = "BTC",
+        risk_decision_sink: Callable[[RiskDecision], None] | None = None,
     ) -> None:
         self.initial_capital = float(initial_capital)
         self.cash = float(initial_capital)
         self.intended_order_size_usd = float(intended_order_size_usd)
         self.max_all_in_cost_per_side = float(max_all_in_cost_per_side)
         self.fee_rate = float(fee_rate)
+        self.risk_engine = risk_engine
+        self.portfolio_state = portfolio_state
+        self.symbol = symbol
+        self.risk_decision_sink = risk_decision_sink
         self.open_position: ShadowPosition | None = None
         self.closed_trades: list[dict[str, Any]] = []
         self.rejected_signals: list[dict[str, Any]] = []
         self.last_rejected_signal_reasons: list[str] = []
+        self.risk_decision_counts = {"approved": 0, "adjusted": 0, "blocked": 0}
 
     def process_signal(
         self,
@@ -392,8 +410,42 @@ class ShadowPortfolio:
                 }
             )
             return action, None
-        self._open_position(signal, execution_cost)
+
+        override_size_usd = None
+        if self.risk_engine is not None and self.portfolio_state is not None:
+            decision = self.risk_engine.evaluate(self._build_position_recommendation(signal), self.portfolio_state)
+            self.risk_decision_counts[decision.status] += 1
+            if self.risk_decision_sink is not None:
+                self.risk_decision_sink(decision)
+            if decision.status == "blocked":
+                self.last_rejected_signal_reasons = ["risk_engine_blocked"]
+                self.rejected_signals.append(
+                    {
+                        "timestamp": signal["timestamp"],
+                        "final_decision": signal.get("final_decision"),
+                        "reasons": ["risk_engine_blocked"],
+                        "risk_decision_reason": decision.reason,
+                    }
+                )
+                action = "AVOID" if str(signal.get("final_decision")) == "AVOID LONG" else "HOLD"
+                return action, None
+            override_size_usd = decision.approved_size_usd
+
+        self._open_position(signal, execution_cost, override_size_usd)
         return "BUY", None
+
+    def _build_position_recommendation(self, signal: dict[str, Any]) -> PositionRecommendation:
+        confidence = max(0.0, min(100.0, float(signal.get("confidence", 0)))) / 100
+        return PositionRecommendation(
+            symbol=self.symbol,
+            asset_class="crypto",
+            bucket=bucket_for_crypto_symbol(self.symbol),
+            action="buy",
+            conviction_score=round(confidence, 4),
+            suggested_size_usd=self.intended_order_size_usd,
+            rationale=f"Shadow trading entry gates passed for {self.symbol}; signal confidence {signal.get('confidence', 0)}.",
+            source_agent="coinbase_shadow_trading",
+        )
 
     def current_equity(self, current_price: float) -> float:
         if self.open_position is None:
@@ -430,12 +482,18 @@ class ShadowPortfolio:
             reasons.append("insufficient_order_book_depth")
         return reasons
 
-    def _open_position(self, signal: dict[str, Any], execution_cost: dict[str, float | bool | None]) -> None:
+    def _open_position(
+        self,
+        signal: dict[str, Any],
+        execution_cost: dict[str, float | bool | None],
+        override_size_usd: float | None = None,
+    ) -> None:
         signal_price = float(signal["price"])
         all_in = float(execution_cost.get("all_in_cost_per_side") or self.fee_rate)
         estimated_slippage = float(execution_cost.get("price_slippage_pct") or max(all_in - self.fee_rate, 0.0))
         simulated_entry_price = signal_price * (1 + estimated_slippage)
-        entry_notional = min(self.intended_order_size_usd, self.cash / (1 + self.fee_rate))
+        intended_size = self.intended_order_size_usd if override_size_usd is None else override_size_usd
+        entry_notional = min(intended_size, self.cash / (1 + self.fee_rate))
         entry_fee = entry_notional * self.fee_rate
         position_size = entry_notional / simulated_entry_price
         self.cash -= entry_notional + entry_fee
@@ -559,11 +617,25 @@ def run_coinbase_shadow_trading(
     output_dir.mkdir(parents=True, exist_ok=True)
     end_time = _as_utc(now()) + timedelta(days=config.duration_days)
     provider = CoinbaseCandleProvider(config.base_url, config.timeout_seconds, opener)
+    risk_engine = None
+    portfolio_state = None
+    risk_decision_log_path = config.output_dir / "risk_decision_log.jsonl"
+    if config.risk_engine_enabled:
+        risk_engine = LiveRiskEngine(load_risk_config(config.risk_config_path))
+        portfolio_state = load_portfolio_state(config.portfolio_state_path, risk_engine.config)
     portfolio = ShadowPortfolio(
         config.initial_shadow_capital,
         config.intended_order_size_usd,
         config.max_all_in_cost_per_side,
         config.fee_rate,
+        risk_engine=risk_engine,
+        portfolio_state=portfolio_state,
+        symbol=normalize_coinbase_product_id(config.product_id).split("-")[0],
+        risk_decision_sink=(
+            (lambda decision: append_risk_decision(decision, risk_decision_log_path))
+            if config.risk_engine_enabled
+            else None
+        ),
     )
     health = ShadowHealth()
     signal_rows: list[dict[str, Any]] = (
@@ -1130,6 +1202,10 @@ def _shadow_summary(
         "safety_controls": _safety_controls(config),
         "live_readiness_criteria": live_criteria,
         "final_verdict": final_verdict,
+        "risk_engine": {
+            "enabled": config.risk_engine_enabled,
+            "decision_counts": dict(portfolio.risk_decision_counts),
+        },
     }
 
 
