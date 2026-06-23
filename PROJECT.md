@@ -212,10 +212,44 @@ Phase 1.17 Research:
 - Output: outputs/exit_optimization_report.json
 - Rankings: outputs/exit_model_rankings.json
 
+Investor Agent Subsystem (built):
+
+- Long-term accumulation/DCA scoring, separate from the short-term signal engine
+- Crypto: src/agents/investor_agent.py (BTC, with cycle-phase overlay, MVRV, fear/greed) and src/agents/crypto_investor_agent.py (ETH, SOL, and other supported alts)
+- Equity: src/agents/equity_investor_agent.py — core ETFs (SPY, QQQ, VTI, IWM, DIA) get an expense-ratio/diversification check; individual growth stocks get P/E, PEG, P/B, FCF-yield, and ROE scoring
+- Fundamentals via src/data/equity_fundamentals_provider.py (Alpha Vantage OVERVIEW + CASH_FLOW, requires ALPHA_VANTAGE_API_KEY; degrades to LOW-confidence fallback without it)
+- Live data sources for crypto: CoinMetrics MVRV and alternative.me fear/greed, with graceful fallback
+- Command: python src/main.py investor --symbol BTC (auto-detects core ETFs; use --asset-class EQUITY --bucket growth to force a growth stock, --skip-risk-engine to bypass sizing)
+- Outputs an investor_score, investor_band, rationale, and (unless skipped) an attached risk_decision
+
+Live Risk Engine (built):
+
+- Shared contract: src/decision/recommendation.py (PositionRecommendation / RiskDecision) — every agent and the signal engine only ever *propose*
+- src/risk/live_risk_engine.py is the only component allowed to size a position: bucket caps, single-position caps, cash buffer, and a portfolio drawdown circuit breaker (default 25%) that exempts core/index buys
+- Config in config/risk_config.json (editable, not hardcoded): total value, bucket targets (core/growth/speculative/cash), per-bucket and single-position caps, drawdown breaker
+- Portfolio composition is a hand-maintained data/portfolio_state.json (no broker feed; the user or a future broker integration must update it)
+- Wired into the investor command (crypto + equity) and into Coinbase shadow trading
+
+Shadow Trading (built):
+
+- src/shadow_trading/coinbase_shadow.py — read-only Coinbase Advanced paper trading; opens no real orders
+- Entries gated through the live risk engine
+- Commands: python src/main.py shadow-coinbase and python src/main.py collect-shadow-signals
+
+Monitoring & Notifications (built):
+
+- src/monitoring/daily_scan.py — re-scores the equity watchlist (rate-limited Alpha Vantage calls), writes data/watchlist_scores.json, fires a Telegram alert on accumulation-zone crossings
+- src/monitoring/daily_digest.py — one daily portfolio digest (total value, 24h change, bucket %s vs targets, drawdown vs breaker, BTC-core progress, ranked watchlist)
+- src/monitoring/hourly_snapshot.py — periodic portfolio snapshots into equity history
+- src/notify/telegram.py — fail-safe Telegram notifier (returns False, never raises, on missing creds or send failure)
+- Config in config/monitoring_config.json (watchlist symbols, accumulation_zone_threshold, btc_core_target)
+- Secrets via .env (gitignored; see .env.example): ALPHA_VANTAGE_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+- Runners: scripts/run_daily_jobs.sh (scan then digest) and scripts/run_hourly_snapshot.sh; scheduling via scripts/crontab.example or scripts/launchd/
+- All read-only: proposes nothing, places no orders
+
 Future phases:
 
-- News Agent
-- Market Regime Agent
-- Risk Engine
-- Paper Trading
-- Broker Integration
+- News Agent (sentiment, SEC filings, earnings, AI-generated trade rationale)
+- Market Regime Agent (cross-asset SPY/QQQ/BTC regime)
+- Live equity signal command (market-hours-aware short-term signals for stocks)
+- Broker Integration (human-confirmed, no autonomous trading)

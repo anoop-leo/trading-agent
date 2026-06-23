@@ -128,6 +128,39 @@ class GrowthEquityTests(unittest.TestCase):
         self.assertEqual(payload["data_quality"]["confidence"], "LOW")
         self.assertIn("pe", payload["data_quality"]["missing_fields"])
 
+    def test_high_confidence_never_returned_with_a_null_scoring_input(self) -> None:
+        """Regression test for the bug where fcf_yield_pct came back null while
+        confidence still reported HIGH because missing-field tracking only checked
+        the overall fetch-succeeded flag, not each individual scoring field."""
+
+        cases = [
+            (["pe_trailing", "pe_forward"], "pe"),
+            (["peg_ratio"], "peg"),
+            (["price_to_book"], "price_to_book"),
+            (["fcf_yield_pct"], "fcf_yield"),
+            (["return_on_equity_ttm"], "return_on_equity"),
+            (["quarterly_revenue_growth_yoy", "quarterly_earnings_growth_yoy"], "growth_consistency"),
+        ]
+        for null_fields, expected_missing_key in cases:
+            with self.subTest(null_fields=null_fields):
+                degraded = dict(GOOD_FUNDAMENTALS)
+                for field in null_fields:
+                    degraded[field] = None
+
+                with TemporaryDirectory() as temp_dir:
+                    payload = run_equity_investor_agent(
+                        EquityInvestorConfig(symbol="AAPL", bucket="growth", output_dir=Path(temp_dir)),
+                        equity_data_loader=_fake_loader(_daily_frame(first_close=120.0, last_close=70.0)),
+                        fundamentals_provider=FakeFundamentalsProvider(degraded),
+                    )
+
+                self.assertNotEqual(
+                    payload["data_quality"]["confidence"],
+                    "HIGH",
+                    f"confidence reported HIGH despite {null_fields} being null",
+                )
+                self.assertIn(expected_missing_key, payload["data_quality"]["missing_fields"])
+
     def test_manual_price_overrides_are_used_without_network(self) -> None:
         with TemporaryDirectory() as temp_dir:
             payload = run_equity_investor_agent(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -18,12 +19,20 @@ from urllib.request import Request, urlopen
 
 ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 DEFAULT_FUNDAMENTALS_CACHE_DIR = Path("data/cache")
+DEFAULT_REQUEST_INTERVAL_SECONDS = 15.0
 
 JsonOpener = Callable[..., Any]
+SleepFn = Callable[[float], None]
 
 
 class EquityFundamentalsProvider:
-    """Fetch trailing/forward valuation and quality metrics for one equity symbol."""
+    """Fetch trailing/forward valuation and quality metrics for one equity symbol.
+
+    Alpha Vantage's free tier silently drops the second of two back-to-back
+    calls (OVERVIEW then CASH_FLOW) far more often than its documented
+    daily quota would suggest -- empirically, spacing them out fixes it.
+    request_interval_seconds controls the pause between those two calls.
+    """
 
     def __init__(
         self,
@@ -32,12 +41,16 @@ class EquityFundamentalsProvider:
         timeout_seconds: float = 10.0,
         opener: JsonOpener = urlopen,
         environ: Mapping[str, str] | None = None,
+        request_interval_seconds: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
+        sleep_fn: SleepFn = time.sleep,
     ) -> None:
         self.base_url = base_url
         self.cache_dir = Path(cache_dir)
         self.timeout_seconds = timeout_seconds
         self._opener = opener
         self._environ = environ if environ is not None else os.environ
+        self.request_interval_seconds = request_interval_seconds
+        self._sleep_fn = sleep_fn
 
     def fetch(self, symbol: str, offline: bool = False) -> dict[str, Any]:
         symbol = symbol.upper()
@@ -57,6 +70,8 @@ class EquityFundamentalsProvider:
         overview = self._alpha_vantage_request("OVERVIEW", symbol, api_key)
         if overview is None or not overview.get("Symbol"):
             return None
+        if self.request_interval_seconds > 0:
+            self._sleep_fn(self.request_interval_seconds)
         cash_flow = self._alpha_vantage_request("CASH_FLOW", symbol, api_key)
 
         try:

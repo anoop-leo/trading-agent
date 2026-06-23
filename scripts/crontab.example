@@ -1,0 +1,15 @@
+# Example crontab entries. Install with: crontab -e
+# Adjust the path if the repo lives somewhere else.
+#
+# Hourly crypto snapshot, on the hour.
+0 * * * * /Users/anoop/projects/trading-agent/scripts/run_hourly_snapshot.sh
+#
+# Daily equity scan + digest at 9am local time.
+0 9 * * * /Users/anoop/projects/trading-agent/scripts/run_daily_jobs.sh
+#
+# NOTE: cron (and launchd) on macOS only fire while the Mac is awake.
+# Snapshots will have gaps whenever the machine sleeps overnight or while
+# closed -- this is fine for now but means the equity-history peak/drawdown
+# can miss intra-sleep moves. Moving this to an always-on host (a small
+# cloud VM, a Raspberry Pi, etc.) is the natural next step for true 24/7
+# coverage; not done in this session.

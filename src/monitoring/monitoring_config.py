@@ -1,0 +1,52 @@
+"""Monitoring thresholds. No secrets and no real holdings here -- this file
+is safe to commit (unlike holdings.json / portfolio_state.json / alert state).
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_MONITORING_CONFIG_PATH = Path("config/monitoring_config.json")
+
+DEFAULT_WATCHLIST_SYMBOLS = ("MSFT", "MU", "NVDA", "GOOGL", "AVGO", "AMZN", "PLTR", "TSM", "VRT", "MRVL")
+
+
+@dataclass(frozen=True)
+class MonitoringConfig:
+    btc_core_target: float = 2.0
+    position_daily_move_pct_threshold: float = 15.0
+    bucket_near_cap_fraction: float = 0.90
+    accumulation_zone_threshold: int = 70
+    watchlist_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_WATCHLIST_SYMBOLS)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["watchlist_symbols"] = list(self.watchlist_symbols)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "MonitoringConfig":
+        kwargs = dict(payload)
+        if "watchlist_symbols" in kwargs:
+            kwargs["watchlist_symbols"] = tuple(kwargs["watchlist_symbols"])
+        return cls(**kwargs)
+
+
+def load_monitoring_config(path: Path = DEFAULT_MONITORING_CONFIG_PATH) -> MonitoringConfig:
+    path = Path(path)
+    if not path.exists():
+        return MonitoringConfig()
+    return MonitoringConfig.from_dict(json.loads(path.read_text()))
+
+
+def write_default_monitoring_config(path: Path = DEFAULT_MONITORING_CONFIG_PATH) -> Path:
+    path = Path(path)
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(MonitoringConfig().to_dict(), indent=2, sort_keys=True) + "\n")
+    return path

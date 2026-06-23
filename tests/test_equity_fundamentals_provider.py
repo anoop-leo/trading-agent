@@ -22,6 +22,48 @@ class FakeResponse:
 
 
 class EquityFundamentalsProviderTests(unittest.TestCase):
+    def test_paces_overview_and_cash_flow_calls(self) -> None:
+        sleeps: list[float] = []
+
+        def opener(request: object, timeout: float = 0) -> FakeResponse:
+            del timeout
+            if "function=OVERVIEW" in request.full_url:
+                return FakeResponse({"Symbol": "AAPL", "MarketCapitalization": "100"})
+            return FakeResponse({"annualReports": [{"operatingCashflow": "10", "capitalExpenditures": "1"}]})
+
+        fetch_equity_fundamentals(
+            "AAPL",
+            provider=EquityFundamentalsProvider(
+                opener=opener,
+                environ={"ALPHA_VANTAGE_API_KEY": "test-key"},
+                request_interval_seconds=12.0,
+                sleep_fn=sleeps.append,
+            ),
+        )
+
+        self.assertEqual(sleeps, [12.0])
+
+    def test_zero_interval_skips_sleep(self) -> None:
+        sleeps: list[float] = []
+
+        def opener(request: object, timeout: float = 0) -> FakeResponse:
+            del timeout
+            if "function=OVERVIEW" in request.full_url:
+                return FakeResponse({"Symbol": "AAPL", "MarketCapitalization": "100"})
+            return FakeResponse({"annualReports": [{"operatingCashflow": "10", "capitalExpenditures": "1"}]})
+
+        fetch_equity_fundamentals(
+            "AAPL",
+            provider=EquityFundamentalsProvider(
+                opener=opener,
+                environ={"ALPHA_VANTAGE_API_KEY": "test-key"},
+                request_interval_seconds=0,
+                sleep_fn=sleeps.append,
+            ),
+        )
+
+        self.assertEqual(sleeps, [])
+
     def test_alpha_vantage_overview_and_cash_flow_are_combined(self) -> None:
         def opener(request: object, timeout: float = 0) -> FakeResponse:
             del timeout
@@ -50,7 +92,9 @@ class EquityFundamentalsProviderTests(unittest.TestCase):
 
         payload = fetch_equity_fundamentals(
             "AAPL",
-            provider=EquityFundamentalsProvider(opener=opener, environ={"ALPHA_VANTAGE_API_KEY": "test-key"}),
+            provider=EquityFundamentalsProvider(
+                opener=opener, environ={"ALPHA_VANTAGE_API_KEY": "test-key"}, request_interval_seconds=0,
+            ),
         )
 
         self.assertEqual(payload["symbol"], "AAPL")

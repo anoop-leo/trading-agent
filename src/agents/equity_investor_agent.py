@@ -428,7 +428,21 @@ def _market_missing_fields() -> list[str]:
 def _fundamentals_missing_fields(fundamentals: dict[str, Any]) -> list[str]:
     if fundamentals.get("missing"):
         return ["pe", "peg", "price_to_book", "fcf_yield", "return_on_equity", "growth_consistency"]
-    return []
+
+    missing: list[str] = []
+    if fundamentals.get("pe_forward") is None and fundamentals.get("pe_trailing") is None:
+        missing.append("pe")
+    if fundamentals.get("peg_ratio") is None:
+        missing.append("peg")
+    if fundamentals.get("price_to_book") is None:
+        missing.append("price_to_book")
+    if fundamentals.get("fcf_yield_pct") is None:
+        missing.append("fcf_yield")
+    if fundamentals.get("return_on_equity_ttm") is None:
+        missing.append("return_on_equity")
+    if fundamentals.get("quarterly_revenue_growth_yoy") is None and fundamentals.get("quarterly_earnings_growth_yoy") is None:
+        missing.append("growth_consistency")
+    return missing
 
 
 def _data_quality_confidence(missing_fields: list[str]) -> str:

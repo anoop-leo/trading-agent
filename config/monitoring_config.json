@@ -1,0 +1,18 @@
+{
+  "accumulation_zone_threshold": 70,
+  "btc_core_target": 2.0,
+  "bucket_near_cap_fraction": 0.9,
+  "position_daily_move_pct_threshold": 15.0,
+  "watchlist_symbols": [
+    "MSFT",
+    "MU",
+    "NVDA",
+    "GOOGL",
+    "AVGO",
+    "AMZN",
+    "PLTR",
+    "TSM",
+    "VRT",
+    "MRVL"
+  ]
+}

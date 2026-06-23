@@ -382,21 +382,69 @@ Signal JSON shape:
 
 ---
 
-## Phase 2
+# Investor Agent (built)
 
-Add notification and monitoring.
+A long-term accumulation/DCA scoring subsystem, separate from the short-term
+signal engine. It scores how attractive it is to accumulate an asset right now
+and routes the proposal through the live risk engine for sizing.
+
+- Crypto BTC (cycle-phase overlay, MVRV, fear/greed): `src/agents/investor_agent.py`
+- Crypto alts (ETH, SOL, and other supported symbols): `src/agents/crypto_investor_agent.py`
+- Equity ETFs and growth stocks: `src/agents/equity_investor_agent.py`
+- Equity fundamentals via Alpha Vantage (`src/data/equity_fundamentals_provider.py`); requires `ALPHA_VANTAGE_API_KEY`, degrades to LOW confidence without it
+
+Run the investor agent (auto-detects core ETFs vs. crypto):
+
+```bash
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main investor --symbol BTC
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main investor --symbol SPY
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main investor --symbol NVDA --asset-class EQUITY --bucket growth
+```
+
+Bypass the risk engine to see the raw agent payload:
+
+```bash
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main investor --symbol BTC --skip-risk-engine
+```
+
+Read-only Coinbase shadow (paper) trading, gated through the risk engine:
+
+```bash
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main shadow-coinbase --use-risk-engine
+PYTHONPATH=src venv_trading/bin/python -m trading_agent.main collect-shadow-signals
+```
+
+Run the monitoring jobs (read-only; sends Telegram if `.env` is configured):
+
+```bash
+./scripts/run_daily_jobs.sh        # equity watchlist scan + daily digest
+./scripts/run_hourly_snapshot.sh   # portfolio snapshot into equity history
+```
+
+Copy `.env.example` to `.env` and fill in `ALPHA_VANTAGE_API_KEY`,
+`TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID` before running the scheduled jobs.
+
+---
+
+## Phase 2 (built)
+
+Notification and monitoring.
 
 Features:
 
-- Telegram Bot
-- Watchlists
-- Scheduled execution
-- Signal history database
+- Telegram bot notifier (`src/notify/telegram.py`), fail-safe (never crashes a job)
+- Equity watchlist re-scoring with accumulation-zone alerts (`src/monitoring/daily_scan.py`)
+- Daily portfolio digest (`src/monitoring/daily_digest.py`)
+- Hourly portfolio snapshots into equity history (`src/monitoring/hourly_snapshot.py`)
+- Scheduled execution via `scripts/run_daily_jobs.sh`, `scripts/run_hourly_snapshot.sh`, `scripts/crontab.example`, `scripts/launchd/`
+- Config in `config/monitoring_config.json`; secrets in `.env` (see `.env.example`)
 
 Outputs:
 
-- Telegram alerts
-- Historical signal tracking
+- Telegram alerts and daily digest
+- `data/watchlist_scores.json` and equity history for 24h change tracking
+
+All monitoring jobs are read-only: they propose nothing and place no orders.
 
 ---
 
@@ -439,21 +487,25 @@ Outputs:
 
 ---
 
-## Phase 5
+## Phase 5 (built)
 
-Add Risk Engine.
+Live Risk Engine.
+
+The only component allowed to size a position. Every agent and the signal engine
+only ever *propose*; the risk engine decides.
 
 Features:
 
-- Position sizing
-- Stop loss recommendations
-- Portfolio exposure controls
-- Maximum daily loss protection
+- Shared contract `src/decision/recommendation.py` (PositionRecommendation / RiskDecision)
+- `src/risk/live_risk_engine.py`: bucket caps, single-position caps, cash buffer
+- Portfolio drawdown circuit breaker (default 25%) that exempts core/index buys
+- Config in `config/risk_config.json` (bucket targets, caps, breaker)
+- Portfolio composition is a hand-maintained `data/portfolio_state.json` (no broker feed)
+- Wired into the `investor` command and Coinbase shadow trading
 
 Outputs:
 
-- Risk score
-- Recommended position size
+- Risk decision (allowed/blocked), recommended position size, and the binding constraint
 
 ---
 
@@ -556,55 +608,51 @@ trading-agent/
 
 ├── requirements.txt
 
+├── .env.example          # template for ALPHA_VANTAGE_API_KEY + Telegram secrets
+
 ├── architecture/
+
+├── config/               # risk_config.json, monitoring_config.json
+
+├── scripts/              # daily/hourly runners, crontab.example, launchd/
+
+├── data/                 # portfolio_state.json, watchlist_scores.json, cache/
 
 ├── src/
 
-│ ├── decision/
+│ ├── main.py             # compatibility entrypoint
 
-│ │   ├── __init__.py
+│ ├── trading_agent/      # Phase 1 signal/backtest engine (+ CLI dispatch in main.py)
 
-│ │   └── decision_engine.py
+│ ├── scoring/            # signal skills (trend, momentum, S/R, regime, setup, MTF)
 
-│ ├── scoring/
+│ ├── decision/           # decision_engine.py + recommendation/PositionRecommendation contract
 
-│ │   ├── __init__.py
+│ ├── agents/             # investor agents (BTC, crypto alts, equity)
 
-│ │   ├── support_resistance_skill.py
+│ ├── data/               # market-data + fundamentals providers, equity data adapter
 
-│ │   ├── risk_reward_skill.py
+│ ├── risk/               # live_risk_engine, structure_stop_engine, portfolio_state, alerts
 
-│ │   ├── market_regime_skill.py
+│ ├── shadow_trading/     # read-only Coinbase paper trading
 
-│ │   ├── setup_detection_skill.py
+│ ├── monitoring/         # daily_scan, daily_digest, hourly_snapshot
 
-│ │   └── multi_timeframe_skill.py
+│ ├── notify/             # telegram notifier
 
-│ └── trading_agent/
+│ ├── planning/           # accumulation/DCA planning
 
-│     ├── config.py
+│ ├── research/           # backtest research engines (exit optimization, etc.)
 
-│     ├── models.py
+│ ├── backtesting/        # backtest simulator support
 
-│     ├── data.py
-
-│     ├── indicators.py
-
-│     ├── scoring.py
-
-│     ├── decision.py
-
-│     ├── output.py
-
-│     └── main.py
+│ └── strategy/           # strategy profiles
 
 ├── tests/
 
-├── outputs/
+├── outputs/              # signal + backtest JSON/CSV/PNG artifacts
 
-│ ├── output.json
-
-│ └── chart.png
+└── logs/                 # daily_scan.log, daily_digest.log
 
 ---
 
