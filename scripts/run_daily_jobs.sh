@@ -10,4 +10,5 @@ if [ -f .env ]; then
 fi
 mkdir -p logs
 PYTHONPATH=src venv_trading/bin/python -m monitoring.daily_scan >> logs/daily_scan.log 2>&1
+PYTHONPATH=src venv_trading/bin/python -m monitoring.crypto_scan >> logs/crypto_scan.log 2>&1
 PYTHONPATH=src venv_trading/bin/python -m monitoring.daily_digest >> logs/daily_digest.log 2>&1

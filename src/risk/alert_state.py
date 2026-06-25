@@ -76,21 +76,44 @@ def evaluate_bucket_cap_alert(
     return message, new_state
 
 
+def _evaluate_zone_crossing(state: dict[str, Any], key: str, in_zone: bool) -> tuple[bool, dict[str, Any]]:
+    """Track an in/out-of-zone boolean under ``key`` and report whether this run
+    is a fresh crossing into the zone (de-duped while it stays in)."""
+
+    was_in_zone = bool(state.get(key, False))
+    new_state = dict(state)
+    new_state[key] = in_zone
+    return (in_zone and not was_in_zone), new_state
+
+
 def evaluate_watchlist_accumulation_alert(
     state: dict[str, Any],
     symbol: str,
     score: int,
     accumulation_zone_threshold: int = 70,
 ) -> tuple[str | None, dict[str, Any]]:
-    key = f"watchlist_{symbol}_in_zone"
-    was_in_zone = bool(state.get(key, False))
-    in_zone = score >= accumulation_zone_threshold
+    crossed, new_state = _evaluate_zone_crossing(
+        state, f"watchlist_{symbol}_in_zone", score >= accumulation_zone_threshold
+    )
     message = None
-    if in_zone and not was_in_zone:
+    if crossed:
         message = f"{symbol} crossed into the accumulation zone: score {score} (threshold {accumulation_zone_threshold})."
-    new_state = dict(state)
-    new_state[key] = in_zone
     return message, new_state
+
+
+def evaluate_crypto_accumulation_crossing(
+    state: dict[str, Any],
+    symbol: str,
+    score: int,
+    accumulation_zone_threshold: int = 70,
+) -> tuple[bool, dict[str, Any]]:
+    """De-duped crypto accumulation-zone crossing tracker. Namespaced separately
+    from the equity watchlist so the two never collide. Returns (crossed, state);
+    the caller composes the message (it needs driver metrics + cap context)."""
+
+    return _evaluate_zone_crossing(
+        state, f"crypto_{symbol}_in_zone", score >= accumulation_zone_threshold
+    )
 
 
 def evaluate_btc_target_alert(

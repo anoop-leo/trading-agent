@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from monitoring.crypto_scan import DEFAULT_CRYPTO_SCORES_PATH
 from monitoring.daily_scan import DEFAULT_WATCHLIST_SCORES_PATH
 from monitoring.monitoring_config import MonitoringConfig, load_monitoring_config
 from notify.telegram import send_telegram_message
@@ -17,10 +18,39 @@ from risk.portfolio_state import DEFAULT_PORTFOLIO_STATE_PATH, PortfolioState, l
 from risk.risk_config import DEFAULT_RISK_CONFIG_PATH, RiskEngineConfig, load_risk_config
 
 
-CRO_BLIND_SPOT_NOTE = (
-    "Note: speculative bucket excludes ~4,000 CRO (unfetchable on Binance/Bybit) -- "
-    "true speculative value is understated, not overstated."
-)
+CRYPTO_ROLE_LABELS = (("core", "Core"), ("held", "Held alts"), ("watchlist", "Watchlist (not held)"))
+
+
+def build_crypto_accumulation_lines(crypto: dict[str, Any] | None, accumulation_zone_threshold: int) -> list[str]:
+    """Pure: render the crypto accumulation block, parallel to the equity watchlist."""
+
+    if not crypto or not crypto.get("scores"):
+        return []
+    scores = crypto["scores"]
+    threshold = crypto.get("accumulation_zone_threshold", accumulation_zone_threshold)
+    lines = [f"Crypto accumulation (zone >= {threshold}):"]
+    for role, label in CRYPTO_ROLE_LABELS:
+        members = [entry for entry in scores.values() if entry.get("role") == role]
+        if not members:
+            continue
+        lines.append(f"  {label}:")
+        for entry in sorted(members, key=lambda item: item.get("score", 0), reverse=True):
+            distance = entry.get("distance_to_zone", max(0, threshold - entry.get("score", 0)))
+            status = "IN ZONE" if entry.get("in_zone") else f"{distance} pts away"
+            drivers = entry.get("drivers")
+            extra = ""
+            if drivers:
+                extra = f"  [MVRV {drivers.get('mvrv')} | F&G {drivers.get('fear_greed')} | {drivers.get('cycle_phase')}]"
+            elif entry.get("in_zone") and entry.get("cap_note"):
+                extra = f"  [{entry['cap_note']}]"
+            lines.append(
+                f"    {entry.get('symbol', ''):<6} score {entry.get('score', 0):>3}  "
+                f"{entry.get('band', ''):<26} {status}{extra}"
+            )
+    for excluded in crypto.get("excluded", []) or []:
+        lines.append(f"  Note: {excluded.get('reason', 'holding excluded (no price provider).')}")
+    lines.append("")
+    return lines
 
 
 def build_daily_digest_text(
@@ -30,6 +60,7 @@ def build_daily_digest_text(
     watchlist: dict[str, Any] | None,
     yesterday_total_value_usd: float | None,
     current_btc_quantity: float | None,
+    crypto: dict[str, Any] | None = None,
 ) -> str:
     """Pure: no network or filesystem access."""
 
@@ -82,8 +113,9 @@ def build_daily_digest_text(
             lines.append(f"  {symbol:<6} score {score:>3}  {band:<24} {status}")
         lines.append("")
 
-    lines.append(CRO_BLIND_SPOT_NOTE)
-    return "\n".join(lines)
+    lines.extend(build_crypto_accumulation_lines(crypto, monitoring_config.accumulation_zone_threshold))
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def run_daily_digest_job(
@@ -93,6 +125,7 @@ def run_daily_digest_job(
     holdings_path: Path = DEFAULT_HOLDINGS_PATH,
     equity_history_path: Path = DEFAULT_EQUITY_HISTORY_PATH,
     watchlist_scores_path: Path = DEFAULT_WATCHLIST_SCORES_PATH,
+    crypto_scores_path: Path = DEFAULT_CRYPTO_SCORES_PATH,
     send: bool = True,
 ) -> dict[str, Any]:
     risk_config = load_risk_config(risk_config_path)
@@ -121,7 +154,14 @@ def run_daily_digest_job(
     if watchlist_scores_path.exists():
         watchlist = json.loads(watchlist_scores_path.read_text())
 
-    text = build_daily_digest_text(state, risk_config, monitoring_config, watchlist, yesterday_total, current_btc_quantity)
+    crypto = None
+    crypto_scores_path = Path(crypto_scores_path)
+    if crypto_scores_path.exists():
+        crypto = json.loads(crypto_scores_path.read_text())
+
+    text = build_daily_digest_text(
+        state, risk_config, monitoring_config, watchlist, yesterday_total, current_btc_quantity, crypto
+    )
 
     sent = False
     if send:

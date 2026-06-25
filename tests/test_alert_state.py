@@ -5,6 +5,7 @@ import unittest
 from risk.alert_state import (
     evaluate_btc_target_alert,
     evaluate_bucket_cap_alert,
+    evaluate_crypto_accumulation_crossing,
     evaluate_drawdown_alert,
     evaluate_position_move_alert,
     evaluate_watchlist_accumulation_alert,
@@ -110,6 +111,29 @@ class WatchlistAccumulationAlertTests(unittest.TestCase):
         _, state = evaluate_watchlist_accumulation_alert({}, "MSFT", 72)
         message, _ = evaluate_watchlist_accumulation_alert(state, "NVDA", 80)
         self.assertIsNotNone(message)
+
+
+class CryptoAccumulationCrossingTests(unittest.TestCase):
+    def test_crosses_into_zone(self) -> None:
+        crossed, new_state = evaluate_crypto_accumulation_crossing({}, "ADA", 72)
+        self.assertTrue(crossed)
+        self.assertTrue(new_state["crypto_ADA_in_zone"])
+
+    def test_no_crossing_below_threshold(self) -> None:
+        crossed, new_state = evaluate_crypto_accumulation_crossing({}, "ADA", 55)
+        self.assertFalse(crossed)
+        self.assertFalse(new_state["crypto_ADA_in_zone"])
+
+    def test_does_not_refire_while_remaining_in_zone(self) -> None:
+        _, state = evaluate_crypto_accumulation_crossing({}, "ADA", 72)
+        crossed, _ = evaluate_crypto_accumulation_crossing(state, "ADA", 78)
+        self.assertFalse(crossed)
+
+    def test_namespaced_independently_from_equity_watchlist(self) -> None:
+        # An equity ADA-in-zone flag (hypothetical) must not suppress the crypto crossing.
+        _, equity_state = evaluate_watchlist_accumulation_alert({}, "ADA", 80)
+        crossed, _ = evaluate_crypto_accumulation_crossing(equity_state, "ADA", 80)
+        self.assertTrue(crossed)
 
 
 class BtcTargetAlertTests(unittest.TestCase):

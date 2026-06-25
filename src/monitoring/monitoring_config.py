@@ -14,6 +14,18 @@ DEFAULT_MONITORING_CONFIG_PATH = Path("config/monitoring_config.json")
 
 DEFAULT_WATCHLIST_SYMBOLS = ("MSFT", "MU", "NVDA", "GOOGL", "AVGO", "AMZN", "PLTR", "TSM", "VRT", "MRVL")
 
+# BTC (core) is scored via investor_agent.py; the held alts and the not-held
+# watchlist via crypto_investor_agent.py. Any holding no price provider supports
+# is surfaced as a blind-spot note from data/holdings.json (the "excluded" list),
+# not configured here.
+DEFAULT_CRYPTO_CORE_SYMBOL = "BTC"
+DEFAULT_CRYPTO_HELD_SYMBOLS = (
+    "ETH", "LINK", "XRP", "SOL", "HBAR", "ONDO", "XLM", "SUI", "ADA", "UNI", "DOT", "AAVE", "GRT",
+)
+DEFAULT_CRYPTO_WATCHLIST_SYMBOLS = ("HYPE",)
+
+_TUPLE_FIELDS = ("watchlist_symbols", "crypto_held_symbols", "crypto_watchlist_symbols")
+
 
 @dataclass(frozen=True)
 class MonitoringConfig:
@@ -22,17 +34,22 @@ class MonitoringConfig:
     bucket_near_cap_fraction: float = 0.90
     accumulation_zone_threshold: int = 70
     watchlist_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_WATCHLIST_SYMBOLS)
+    crypto_core_symbol: str = DEFAULT_CRYPTO_CORE_SYMBOL
+    crypto_held_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_CRYPTO_HELD_SYMBOLS)
+    crypto_watchlist_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_CRYPTO_WATCHLIST_SYMBOLS)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["watchlist_symbols"] = list(self.watchlist_symbols)
+        for name in _TUPLE_FIELDS:
+            payload[name] = list(getattr(self, name))
         return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "MonitoringConfig":
         kwargs = dict(payload)
-        if "watchlist_symbols" in kwargs:
-            kwargs["watchlist_symbols"] = tuple(kwargs["watchlist_symbols"])
+        for name in _TUPLE_FIELDS:
+            if name in kwargs:
+                kwargs[name] = tuple(kwargs[name])
         return cls(**kwargs)
 
 
