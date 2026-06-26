@@ -688,6 +688,46 @@ def build_collect_shadow_signals_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_screen_airdrop_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Read-only airdrop token due-diligence screener. Reads public data ABOUT a "
+        "token; never connects a wallet, signs, or claims.",
+    )
+    parser.add_argument("--address", "--contract", dest="address", default=None, help="Token contract address (EVM 0x...).")
+    parser.add_argument(
+        "--chain",
+        default="ethereum",
+        help="Chain name: ethereum, bsc, polygon, arbitrum, optimism, base, avalanche, and more.",
+    )
+    parser.add_argument("--symbol", default=None, help="Optional token symbol label for the report.")
+    parser.add_argument("--timeout-seconds", type=float, default=15.0, help="Security-data request timeout.")
+    parser.add_argument("--json", action="store_true", help="Emit the structured report as JSON instead of text.")
+    return parser
+
+
+def _run_screen_airdrop_command(argv: Sequence[str] | None = None) -> int:
+    from airdrop.screener import format_risk_report, screen_token
+    from airdrop.token_security_provider import TokenSecurityProvider
+
+    args = build_screen_airdrop_parser().parse_args(argv)
+    if not args.address:
+        print(
+            "screen-airdrop requires --address (a token contract address). A symbol alone is "
+            "ambiguous and unsafe to screen.",
+            file=sys.stderr,
+        )
+        return 2
+
+    provider = TokenSecurityProvider(timeout_seconds=args.timeout_seconds)
+    envelope = provider.fetch(args.address, args.chain)
+    report = screen_token(envelope, symbol=args.symbol)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(format_risk_report(report))
+    return 0
+
+
 def build_investor_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run deterministic investor accumulation scoring.")
     parser.add_argument(
@@ -2021,6 +2061,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = _run_shadow_coinbase_command(args[1:])
     elif args and args[0] in {"collect-shadow-signals", "collect-enriched-shadow-signals"}:
         payload = _run_collect_shadow_signals_command(args[1:])
+    elif args and args[0] in {"screen-airdrop", "airdrop-screen"}:
+        return _run_screen_airdrop_command(args[1:])
     elif args and args[0] == "investor":
         payload = _run_investor_command(args[1:])
     elif args and args[0] in {"analyze-false-avoids", "false-avoid-analysis"}:
