@@ -30,6 +30,7 @@ from scoring.setup_detection_skill import SetupInput, SetupResult, detect_setup
 from scoring.support_resistance_skill import SupportResistanceResult, calculate_support_resistance
 from trading_agent.config import AgentConfig
 from trading_agent.data import BinanceKlineProvider, BybitKlineProvider
+from trading_agent.entry_gates import apply_entry_quality_gates
 from trading_agent.indicators import add_indicators
 from trading_agent.journal import update_signal_journal
 from trading_agent.models import MarketDataProvider, SignalScores
@@ -271,6 +272,7 @@ def run(
         multi_timeframe,
         final_decision,
     )
+    apply_entry_quality_gates(payload)
     journal_frame = analyses["1d"].indicators if "1d" in analyses else primary_analysis.indicators
     journal_path, journal_status = update_signal_journal(payload, journal_frame, config.output_dir)
     payload["signal_journal"] = {

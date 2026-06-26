@@ -26,6 +26,11 @@ class AgentConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             AgentConfig(symbol="DOGEUSDT")
 
+    def test_aaveusdt_supported_and_resolves_to_binance(self) -> None:
+        config = AgentConfig(symbol="aaveusdt")
+        self.assertEqual(config.symbol, "AAVEUSDT")
+        self.assertEqual(config.resolved_market_data_source, "BINANCE")
+
     def test_invalid_history_limit_raises(self) -> None:
         with self.assertRaises(ConfigurationError):
             AgentConfig(history_limit=1001)
