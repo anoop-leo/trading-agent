@@ -21,7 +21,12 @@
   "crypto_watchlist_symbols": [
     "HYPE"
   ],
+  "earnings_alert_lead_days": 3,
+  "earnings_caveat_days": 10,
+  "earnings_horizon": "3month",
+  "equity_news_limit": 50,
   "position_daily_move_pct_threshold": 15.0,
+  "upcoming_earnings_window_days": 14,
   "watchlist_symbols": [
     "MSFT",
     "MU",

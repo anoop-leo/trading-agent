@@ -132,6 +132,31 @@ def evaluate_btc_target_alert(
     return message, new_state
 
 
+def evaluate_earnings_proximity_alert(
+    state: dict[str, Any],
+    symbol: str,
+    report_date: str,
+    days_until: int | None,
+    lead_days: int = 3,
+) -> tuple[str | None, dict[str, Any]]:
+    """Fire once when a watchlist name enters the T-minus-lead_days earnings window.
+    De-duped per symbol+report_date so it does not re-alert every daily run."""
+
+    key = f"earnings_alerted_{symbol}_{report_date}"
+    if days_until is None or days_until < 0 or days_until > lead_days:
+        return None, state
+    if state.get(key):
+        return None, state
+    new_state = dict(state)
+    new_state[key] = True
+    message = (
+        f"{symbol} reports earnings on {report_date} (in {days_until} day(s)). "
+        "Initiating or adding a tranche right before earnings is taking a binary event — "
+        "the job of this alert is to say WHEN NOT TO ACT, not to buy."
+    )
+    return message, new_state
+
+
 def evaluate_position_move_alert(
     state: dict[str, Any],
     symbol: str,

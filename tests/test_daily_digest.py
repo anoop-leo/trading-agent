@@ -1,9 +1,38 @@
 import unittest
 
-from monitoring.daily_digest import build_crypto_accumulation_lines, build_daily_digest_text
+from monitoring.daily_digest import (
+    build_crypto_accumulation_lines,
+    build_daily_digest_text,
+    build_equity_news_lines,
+)
 from monitoring.monitoring_config import MonitoringConfig
 from risk.portfolio_state import PortfolioState
 from risk.risk_config import RiskEngineConfig
+
+
+def _equity_news(**overrides) -> dict:
+    data = {
+        "earnings_available": True,
+        "news_available": True,
+        "upcoming_earnings_window_days": 14,
+        "earnings_alert_lead_days": 3,
+        "earnings_caveat_days": 10,
+        "upcoming_earnings": [
+            {"symbol": "NVDA", "report_date": "2026-06-28", "days_until": 2, "estimate": "1.20"},
+            {"symbol": "TSM", "report_date": "2026-07-08", "days_until": 12, "estimate": "2.0"},
+        ],
+        "news_tier1": {
+            "analyst_rating": [{"symbols": ["NVDA"], "title": "NVDA price target raised to 200", "source": "X"}],
+            "m_and_a": [], "regulatory": [], "sec_filing": [], "guidance": [], "earnings_news": [],
+        },
+        "news_tier2_sentiment": [
+            {"symbols": ["MSFT"], "title": "MSFT chatter on social media", "source": "Y",
+             "sentiment": "Bullish", "label": "unverified sentiment — do not trade on this alone"},
+        ],
+        "coverage_notes": ["Coverage note: structured analyst ratings are headline-only."],
+    }
+    data.update(overrides)
+    return data
 
 
 def _crypto() -> dict:
@@ -96,6 +125,43 @@ class BuildDailyDigestTextTests(unittest.TestCase):
         self.assertIn("Crypto accumulation", text)
         self.assertIn("BTC", text)
         self.assertIn("MVRV", text)  # BTC drivers shown
+
+
+class EquityNewsBlockTests(unittest.TestCase):
+    def test_block_absent_without_data(self) -> None:
+        self.assertEqual(build_equity_news_lines(None), [])
+
+    def test_block_shows_upcoming_earnings_and_tiers(self) -> None:
+        text = "\n".join(build_equity_news_lines(_equity_news()))
+        self.assertIn("EQUITY NEWS & EARNINGS", text)
+        self.assertIn("NVDA", text)
+        self.assertIn("Rating / price-target changes", text)
+        self.assertIn("UNVERIFIED SENTIMENT (do not trade on this alone)", text)
+
+    def test_unavailable_earnings_says_so_not_all_clear(self) -> None:
+        text = "\n".join(build_equity_news_lines(_equity_news(earnings_available=False, upcoming_earnings=[])))
+        self.assertIn("UNAVAILABLE", text)
+        self.assertIn("not all-clear", text)
+
+    def test_in_zone_watchlist_line_gets_earnings_suppression_caveat(self) -> None:
+        watchlist = {"scores": {"NVDA": 75}, "bands": {"NVDA": "ACCUMULATION_ZONE"}}
+        text = build_daily_digest_text(
+            _state(), RiskEngineConfig(), MonitoringConfig(), watchlist, None, None, None, _equity_news()
+        )
+        # NVDA is in-zone AND reports in 2 days -> the line must caveat, not amplify.
+        nvda_line = next(line for line in text.splitlines() if line.strip().startswith("NVDA"))
+        self.assertIn("IN ZONE", nvda_line)
+        self.assertIn("BUT earnings in 2d", nvda_line)
+        self.assertIn("consider waiting", nvda_line)
+
+    def test_no_earnings_caveat_when_report_is_far_out(self) -> None:
+        watchlist = {"scores": {"TSM": 75}, "bands": {"TSM": "ACCUMULATION_ZONE"}}
+        news = _equity_news(upcoming_earnings=[{"symbol": "TSM", "report_date": "2026-08-01", "days_until": 30}])
+        text = build_daily_digest_text(
+            _state(), RiskEngineConfig(), MonitoringConfig(), watchlist, None, None, None, news
+        )
+        tsm_line = next(line for line in text.splitlines() if line.strip().startswith("TSM"))
+        self.assertNotIn("earnings in", tsm_line)
 
 
 class BuildCryptoAccumulationLinesTests(unittest.TestCase):

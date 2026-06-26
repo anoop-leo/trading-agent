@@ -10,6 +10,7 @@ from typing import Any
 
 from monitoring.crypto_scan import DEFAULT_CRYPTO_SCORES_PATH
 from monitoring.daily_scan import DEFAULT_WATCHLIST_SCORES_PATH
+from monitoring.equity_news import DEFAULT_EQUITY_NEWS_PATH
 from monitoring.monitoring_config import MonitoringConfig, load_monitoring_config
 from notify.telegram import send_telegram_message
 from risk.build_portfolio_state import DEFAULT_HOLDINGS_PATH, load_holdings
@@ -53,6 +54,71 @@ def build_crypto_accumulation_lines(crypto: dict[str, Any] | None, accumulation_
     return lines
 
 
+_TIER1_MATERIAL = (("m_and_a", "M&A"), ("regulatory", "Regulatory"), ("sec_filing", "Filing"),
+                   ("guidance", "Guidance"), ("earnings_news", "Earnings news"))
+_NEWS_MAX_PER_SECTION = 5
+
+
+def _news_line(record: dict[str, Any], prefix: str = "") -> str:
+    symbols = "/".join(record.get("symbols", [])) or "?"
+    title = (record.get("title") or "").strip()
+    if len(title) > 96:
+        title = title[:93] + "..."
+    source = record.get("source") or ""
+    tail = f" ({source})" if source else ""
+    return f"    [{symbols}] {prefix}{title}{tail}"
+
+
+def build_equity_news_lines(equity_news: dict[str, Any] | None) -> list[str]:
+    """Pure: render the equity news + earnings block for the digest."""
+
+    if not equity_news:
+        return []
+    lines = ["EQUITY NEWS & EARNINGS:"]
+
+    window = equity_news.get("upcoming_earnings_window_days", 14)
+    lead = equity_news.get("earnings_alert_lead_days", 3)
+    lines.append(f"  Upcoming earnings (next {window} days):")
+    if not equity_news.get("earnings_available", False):
+        lines.append("    earnings calendar UNAVAILABLE — timing unknown (not all-clear)")
+    else:
+        all_upcoming = equity_news.get("upcoming_earnings", [])
+        soon = [e for e in all_upcoming if e.get("days_until", 999) <= window]
+        if not soon:
+            lines.append(f"    none in the next {window} days")
+            for entry in all_upcoming[:3]:  # still surface the populated calendar
+                lines.append(f"    next up: {entry.get('symbol', '?'):<6} {entry.get('report_date', '?')} (in {entry.get('days_until')}d)")
+        for entry in soon:
+            days = entry.get("days_until")
+            flag = "  <- within alert window: a tranche now = a binary event" if days is not None and days <= lead else ""
+            lines.append(f"    {entry.get('symbol', '?'):<6} {entry.get('report_date', '?')} (in {days}d){flag}")
+
+    tier1 = equity_news.get("news_tier1", {}) or {}
+    ratings = tier1.get("analyst_rating", [])
+    if ratings:
+        lines.append("  Rating / price-target changes:")
+        for record in ratings[:_NEWS_MAX_PER_SECTION]:
+            lines.append(_news_line(record))
+
+    material = [(label, rec) for key, label in _TIER1_MATERIAL for rec in tier1.get(key, [])]
+    if material:
+        lines.append("  Material events (M&A / regulatory / filings / guidance):")
+        for label, record in material[:_NEWS_MAX_PER_SECTION]:
+            lines.append(_news_line(record, prefix=f"{label}: "))
+
+    tier2 = equity_news.get("news_tier2_sentiment", [])
+    if tier2:
+        lines.append("  --- UNVERIFIED SENTIMENT (do not trade on this alone) ---")
+        for record in tier2[:_NEWS_MAX_PER_SECTION]:
+            sentiment = record.get("sentiment") or "n/a"
+            lines.append(_news_line(record, prefix=f"[{sentiment}] "))
+
+    for note in equity_news.get("coverage_notes", []) or []:
+        lines.append(f"  {note}")
+    lines.append("")
+    return lines
+
+
 def build_daily_digest_text(
     state: PortfolioState,
     risk_config: RiskEngineConfig,
@@ -61,6 +127,7 @@ def build_daily_digest_text(
     yesterday_total_value_usd: float | None,
     current_btc_quantity: float | None,
     crypto: dict[str, Any] | None = None,
+    equity_news: dict[str, Any] | None = None,
 ) -> str:
     """Pure: no network or filesystem access."""
 
@@ -104,18 +171,50 @@ def build_daily_digest_text(
         )
         lines.append("")
 
+    earnings_days = _earnings_days_lookup(equity_news)
+    caveat_days = equity_news.get("earnings_caveat_days", 10) if equity_news else 10
     if watchlist and watchlist.get("scores"):
         lines.append(f"Watchlist (accumulation zone >= {monitoring_config.accumulation_zone_threshold}):")
         for symbol, score in sorted(watchlist["scores"].items(), key=lambda item: item[1], reverse=True):
             distance = monitoring_config.accumulation_zone_threshold - score
-            status = "IN ZONE" if distance <= 0 else f"{distance} pts away"
+            in_zone = distance <= 0
+            status = "IN ZONE" if in_zone else f"{distance} pts away"
             band = watchlist.get("bands", {}).get(symbol, "")
-            lines.append(f"  {symbol:<6} score {score:>3}  {band:<24} {status}")
+            caveat = _earnings_caveat(symbol, score, in_zone, earnings_days, caveat_days)
+            lines.append(f"  {symbol:<6} score {score:>3}  {band:<24} {status}{caveat}")
         lines.append("")
 
     lines.extend(build_crypto_accumulation_lines(crypto, monitoring_config.accumulation_zone_threshold))
+    lines.extend(build_equity_news_lines(equity_news))
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _earnings_days_lookup(equity_news: dict[str, Any] | None) -> dict[str, int]:
+    """Soonest days-until-earnings per symbol, from the equity-news payload."""
+
+    lookup: dict[str, int] = {}
+    if not equity_news:
+        return lookup
+    for entry in equity_news.get("upcoming_earnings", []) or []:
+        symbol = entry.get("symbol")
+        days = entry.get("days_until")
+        if symbol is None or days is None:
+            continue
+        if symbol not in lookup or days < lookup[symbol]:
+            lookup[symbol] = days
+    return lookup
+
+
+def _earnings_caveat(symbol: str, score: int, in_zone: bool, earnings_days: dict[str, int], caveat_days: int) -> str:
+    """Earnings proximity SUPPRESSES/caveats a signal -- it never amplifies one."""
+
+    days = earnings_days.get(symbol)
+    if days is None or days > caveat_days:
+        return ""
+    if in_zone:
+        return f"  <- BUT earnings in {days}d — consider waiting until after (binary event)"
+    return f"  (earnings in {days}d)"
 
 
 def run_daily_digest_job(
@@ -126,6 +225,7 @@ def run_daily_digest_job(
     equity_history_path: Path = DEFAULT_EQUITY_HISTORY_PATH,
     watchlist_scores_path: Path = DEFAULT_WATCHLIST_SCORES_PATH,
     crypto_scores_path: Path = DEFAULT_CRYPTO_SCORES_PATH,
+    equity_news_path: Path = DEFAULT_EQUITY_NEWS_PATH,
     send: bool = True,
 ) -> dict[str, Any]:
     risk_config = load_risk_config(risk_config_path)
@@ -159,8 +259,13 @@ def run_daily_digest_job(
     if crypto_scores_path.exists():
         crypto = json.loads(crypto_scores_path.read_text())
 
+    equity_news = None
+    equity_news_path = Path(equity_news_path)
+    if equity_news_path.exists():
+        equity_news = json.loads(equity_news_path.read_text())
+
     text = build_daily_digest_text(
-        state, risk_config, monitoring_config, watchlist, yesterday_total, current_btc_quantity, crypto
+        state, risk_config, monitoring_config, watchlist, yesterday_total, current_btc_quantity, crypto, equity_news
     )
 
     sent = False

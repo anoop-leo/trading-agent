@@ -37,6 +37,13 @@ class MonitoringConfig:
     crypto_core_symbol: str = DEFAULT_CRYPTO_CORE_SYMBOL
     crypto_held_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_CRYPTO_HELD_SYMBOLS)
     crypto_watchlist_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_CRYPTO_WATCHLIST_SYMBOLS)
+    # Equity news + earnings (Phase 2). Earnings calendar is the centerpiece;
+    # alert T-minus earnings_alert_lead_days ahead of a watchlist name's report.
+    earnings_alert_lead_days: int = 3
+    earnings_horizon: str = "3month"
+    upcoming_earnings_window_days: int = 14
+    earnings_caveat_days: int = 10
+    equity_news_limit: int = 50
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
