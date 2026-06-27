@@ -233,12 +233,14 @@ def build_market_data_provider(config: AgentConfig) -> MarketDataProvider:
     )
 
 
-def run(
+def build_signal_payload(
     config: AgentConfig,
     provider: MarketDataProvider | None = None,
-    chart_writer: ChartWriter = write_chart,
-) -> dict[str, Any]:
-    """Run one local Phase 1 signal-generation cycle."""
+) -> tuple[dict[str, Any], dict[str, TimeframeAnalysis], TimeframeAnalysis, Any]:
+    """Compute the gated signal payload with NO file/chart/journal side effects.
+
+    Returns the payload plus the intermediates run() needs to persist artifacts.
+    Monitoring callers should use compute_signal() instead."""
 
     market_data_provider = provider or build_market_data_provider(config)
 
@@ -273,6 +275,24 @@ def run(
         final_decision,
     )
     apply_entry_quality_gates(payload)
+    return payload, analyses, primary_analysis, multi_timeframe
+
+
+def compute_signal(config: AgentConfig, provider: MarketDataProvider | None = None) -> dict[str, Any]:
+    """Gated signal payload only, no side effects -- safe for monitoring scans."""
+
+    payload, _analyses, _primary, _multi_timeframe = build_signal_payload(config, provider)
+    return payload
+
+
+def run(
+    config: AgentConfig,
+    provider: MarketDataProvider | None = None,
+    chart_writer: ChartWriter = write_chart,
+) -> dict[str, Any]:
+    """Run one local Phase 1 signal-generation cycle (computes + persists artifacts)."""
+
+    payload, analyses, primary_analysis, multi_timeframe = build_signal_payload(config, provider)
     journal_frame = analyses["1d"].indicators if "1d" in analyses else primary_analysis.indicators
     journal_path, journal_status = update_signal_journal(payload, journal_frame, config.output_dir)
     payload["signal_journal"] = {

@@ -26,6 +26,14 @@
   "earnings_horizon": "3month",
   "equity_news_limit": 50,
   "position_daily_move_pct_threshold": 15.0,
+  "signal_alert_symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "LINKUSDT",
+    "AAVEUSDT",
+    "HYPEUSDT"
+  ],
   "upcoming_earnings_window_days": 14,
   "watchlist_symbols": [
     "MSFT",

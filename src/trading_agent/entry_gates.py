@@ -101,14 +101,22 @@ def apply_entry_quality_gates(payload: dict[str, Any]) -> dict[str, Any]:
     payload["entry_decision"] = entry_decision
 
     if entry_decision == "WAIT_FOR_PULLBACK":
+        # Normalize the pullback band once so low is always the lower bound, even
+        # when support sits above ema20. Fix the value, not just the display.
+        if support is not None and ema20 is not None:
+            pb_low = min(support, ema20)
+            pb_high = max(support, ema20)
+        else:
+            pb_low = None
+            pb_high = None
         payload["watch_levels"] = {
-            "pullback_entry": {"low": support, "high": ema20},
+            "pullback_entry": {"low": pb_low, "high": pb_high},
             "breakout_entry": {"level": resistance, "volume_requirement": VOLUME_BREAKOUT_REQUIREMENT},
             "invalidation": stop_loss,
         }
         payload["alert_summary"] = (
             f"{symbol} — {trend_bias} trend, entry {entry_decision}. "
-            f"Watch pullback {_fmt(support)}–{_fmt(ema20)} or breakout above {_fmt(resistance)} "
+            f"Watch pullback {_fmt(pb_low)}–{_fmt(pb_high)} or breakout above {_fmt(resistance)} "
             f"with volume >= {VOLUME_BREAKOUT_REQUIREMENT}x."
         )
     else:

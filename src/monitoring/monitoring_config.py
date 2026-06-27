@@ -24,7 +24,11 @@ DEFAULT_CRYPTO_HELD_SYMBOLS = (
 )
 DEFAULT_CRYPTO_WATCHLIST_SYMBOLS = ("HYPE",)
 
-_TUPLE_FIELDS = ("watchlist_symbols", "crypto_held_symbols", "crypto_watchlist_symbols")
+# Short-term technical signal engine symbols surfaced to Telegram (read-only,
+# never execution). Must be symbols the signal engine supports (see config.py).
+DEFAULT_SIGNAL_ALERT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "AAVEUSDT", "HYPEUSDT")
+
+_TUPLE_FIELDS = ("watchlist_symbols", "crypto_held_symbols", "crypto_watchlist_symbols", "signal_alert_symbols")
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class MonitoringConfig:
     upcoming_earnings_window_days: int = 14
     earnings_caveat_days: int = 10
     equity_news_limit: int = 50
+    signal_alert_symbols: tuple[str, ...] = field(default_factory=lambda: DEFAULT_SIGNAL_ALERT_SYMBOLS)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

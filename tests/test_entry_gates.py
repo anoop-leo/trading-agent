@@ -102,6 +102,12 @@ class TrendBiasTests(unittest.TestCase):
 
 
 class NullSafetyTests(unittest.TestCase):
+    def test_pullback_band_normalized_when_support_above_ema20(self) -> None:
+        # AAVE case: support (92.35) sits above ema20 (91.48) -> low must be the lower bound.
+        p = apply_entry_quality_gates(_payload(rr_ratio=0.8, support=92.35, ema20=91.48, resistance=96.54))
+        self.assertEqual(p["watch_levels"]["pullback_entry"], {"low": 91.48, "high": 92.35})
+        self.assertIn("Watch pullback 91.48–92.35", p["alert_summary"])
+
     def test_watch_levels_null_safe_in_alert_summary(self) -> None:
         p = apply_entry_quality_gates(_payload(rr_ratio=0.8, support=None, ema20=None, resistance=None))
         self.assertEqual(p["entry_decision"], "WAIT_FOR_PULLBACK")

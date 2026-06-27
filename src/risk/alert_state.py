@@ -132,6 +132,23 @@ def evaluate_btc_target_alert(
     return message, new_state
 
 
+def evaluate_signal_state_alert(
+    state: dict[str, Any],
+    symbol: str,
+    state_value: str,
+    actionable: bool,
+) -> tuple[bool, dict[str, Any]]:
+    """De-dupe technical-signal alerts: fire only when an actionable signal's state
+    (entry_decision + gate) CHANGES, not every run while it stays the same. The
+    stored value updates every run, so reverting then re-entering re-fires."""
+
+    key = f"signal_state_{symbol}"
+    last = state.get(key)
+    new_state = dict(state)
+    new_state[key] = state_value
+    return (actionable and state_value != last), new_state
+
+
 def evaluate_earnings_proximity_alert(
     state: dict[str, Any],
     symbol: str,
